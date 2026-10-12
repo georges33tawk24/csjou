@@ -14,19 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./fetch-sources.sh
+      - name: Build
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest" >> "$GITHUB_ENV"
+          if ! docker build --progress=plain --build-arg BUILDPLATFORM=linux/amd64 \
+            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
+            -t "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest" . > build.log 2>&1; then
+            # job logs need repo admin rights; annotations are public, so surface the tail there
+            grep -v -E '^#[0-9]+ (sha256|extracting|DONE|CACHED|resolve)' build.log | tr -d '\r' | tail -n 9 \
+              | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
+            exit 1
+          fi
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        run: |
-          image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest
-          if ! docker build --progress=plain --build-arg BUILDPLATFORM=linux/amd64 \
-            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
-            -t "$image" . 2>&1 | tee build.log; then
-            # job logs need repo admin rights; annotations are public, so surface the tail there
-            echo "::error title=docker build::$(grep -v '^#[0-9]* \[' build.log | tail -n 60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
-            exit 1
-          fi
-          docker push "$image"
+      - name: Push
+        run: docker push "$IMAGE"

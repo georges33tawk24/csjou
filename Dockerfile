@@ -8,16 +8,19 @@ ARG BUILDPLATFORM=linux/amd64
 # ---- engine (32-bit x86) + native CS server dll ----
 FROM --platform=linux/386 debian:trixie-slim AS engine
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential python3 cmake ca-certificates libbsd-dev \
+        build-essential python3 ca-certificates libbsd-dev curl unzip \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /xash
 COPY src/xash3d-fwgs .
 RUN ./waf configure -T release -d --enable-openmp && ./waf build
-WORKDIR /cs
-COPY src/cs16-client .
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_CLIENT=OFF -DBUILD_MAINUI=OFF \
-        -DCMAKE_INSTALL_PREFIX=/cs/out \
-    && cmake --build build -j"$(nproc)" --target install
+# CS game logic: official ReGameDLL release (drop-in for Valve's cs.so)
+ARG REGAMEDLL=5.30.0.814
+ARG REGAMEDLL_SHA256=457f5c96a4d10280fcad47f106cbd5be86363a47df1ccab91c514e9d1bc6fd18
+RUN curl -fsSL -o /tmp/regamedll.zip \
+        https://github.com/rehlds/ReGameDLL_CS/releases/download/$REGAMEDLL/regamedll-bin-$REGAMEDLL.zip \
+    && echo "$REGAMEDLL_SHA256  /tmp/regamedll.zip" | sha256sum -c - \
+    && unzip -q /tmp/regamedll.zip 'bin/linux32/*' -d /tmp/regamedll \
+    && mkdir -p /cs/out && mv /tmp/regamedll/bin/linux32/cstrike /cs/out/
 
 # ---- Go WebRTC server linked against the engine ----
 FROM --platform=linux/386 golang:1.25.1 AS go

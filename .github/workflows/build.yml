@@ -21,7 +21,8 @@ jobs:
             --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
             -t "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest" . > build.log 2>&1; then
             # job logs need repo admin rights; annotations are public, so surface the tail there
-            grep -v -E '^#[0-9]+ (sha256|extracting|DONE|CACHED|resolve)' build.log | tr -d '\r' | tail -n 9 \
+            { grep -E 'error:|Error [0-9]|CMake Error|undefined reference|fatal|No such file|not found' build.log | head -n 8
+              tail -n 1 build.log; } | tr -d '\r' | cut -c1-900 \
               | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           fi

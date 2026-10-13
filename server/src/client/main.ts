@@ -47,11 +47,11 @@ const CLASSIC: Cvars = {
     mp_forcerespawn: 0, mp_round_infinite: 0, mp_buy_anywhere: 0, mp_buytime: 1.5, mp_startmoney: 800,
     mp_freeforall: 0, mp_respawn_immunitytime: 0, mp_give_player_c4: 1, mp_weapons_allow_map_placed: 1,
     mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
-    mp_item_staytime: 300, bot_deathmatch: 0,
+    mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0,
     ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 1])),
 }
 const DEATHMATCH: Cvars = {
-    ...CLASSIC, mp_forcerespawn: 1, mp_round_infinite: 1, mp_buy_anywhere: 1, mp_buytime: -1, mp_startmoney: 16000,
+    ...CLASSIC, mp_forcerespawn: 1, mp_round_infinite: 1, mp_buy_anywhere: 1, mp_buytime: -1, mp_maxmoney: 99999, mp_startmoney: 99999, mp_free_armor: 2,
     mp_respawn_immunitytime: 2, mp_give_player_c4: 0, mp_freezetime: 0, mp_item_staytime: 15, bot_deathmatch: 1,
 }
 const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {

@@ -84,7 +84,7 @@ const PAD_BUTTONS = [
 const defaultPad = () => Object.fromEntries(ACTIONS.map(a => [a.id, a.key]))
 
 const DEFAULTS: Omit<Settings, 'pad'> = {
-    lookX: 220, lookY: 160, invertLook: false, deadzone: 12, crouchToggle: false,
+    lookX: 200, lookY: 140, invertLook: false, deadzone: 12, crouchToggle: false,
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
@@ -147,8 +147,9 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
         ...(controllerFree ? [
             'joy_forward 1',
             'joy_side 1',
-            `joy_yaw ${s.lookX}`,
-            `joy_pitch ${s.invertLook ? -s.lookY : s.lookY}`,
+            // the client multiplies stick look by the mouse sensitivity as well, so take it back out
+            `joy_yaw ${(s.lookX / s.mouseSens).toFixed(2)}`,
+            `joy_pitch ${((s.invertLook ? -s.lookY : s.lookY) / s.mouseSens).toFixed(2)}`,
             ...PAD_BUTTONS.map(b => `unbind ${b.key}`),
             ...ACTIONS.filter(a => s.pad[a.id]).map(a =>
                 `bind ${s.pad[a.id]} "${a.id === 'crouch' && s.crouchToggle ? 'joucs_crouch' : a.cmd}"`),

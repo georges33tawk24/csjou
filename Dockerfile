@@ -12,6 +12,10 @@ COPY src/cs16-client .
 # still uses), so the menu's Quit asks the page to go back to the homepage instead.
 RUN sed -i 's|"quit\\n"|"echo JOUCS_MENU quit\\n"|' 3rdparty/mainui_cpp/menus/Main.cpp \
     && grep -q 'JOUCS_MENU quit' 3rdparty/mainui_cpp/menus/Main.cpp
+# Bots build each map's navigation data once, 0.5 s per frame by default (the
+# game runs at 2 fps for a minute); 10 ms per frame keeps it smooth.
+RUN sed -i 's/updateTimesliceDuration = 0.5f/updateTimesliceDuration = 0.01f/' 3rdparty/ReGameDLL_CS/regamedll/dlls/bot/cs_bot_learn.cpp \
+    && grep -q 'updateTimesliceDuration = 0.01f' 3rdparty/ReGameDLL_CS/regamedll/dlls/bot/cs_bot_learn.cpp
 RUN emcmake cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/cs/out \
     && cmake --build build -j"$(nproc)" --target install
 

@@ -6,7 +6,8 @@ import '@fontsource/black-ops-one/latin-400.css' // stencil title font (OFL)
 import {mapsIn, openGameFiles, savedGameFiles, saveGameFiles, savedNav, saveNav} from './files'
 import {CODE_RE, findLobby, hostLobby, type Lobby, type LobbyInfo, newLobbyCode} from './lobby'
 import {initMenus, menuBackground} from './menus'
-import {applySettings, initSettings, loadSettings} from './settings'
+import {onPadActivity} from './pad'
+import {applySettings, initSettings, loadSettings, setInputDevice} from './settings'
 
 const SKILLS = ['Easy', 'Normal', 'Hard', 'Expert']
 const MAP_RE = /^[a-z0-9_]+$/
@@ -47,11 +48,13 @@ const CLASSIC: Cvars = {
     mp_forcerespawn: 0, mp_round_infinite: 0, mp_buy_anywhere: 0, mp_buytime: 1.5, mp_startmoney: 800,
     mp_freeforall: 0, mp_respawn_immunitytime: 0, mp_give_player_c4: 1, mp_weapons_allow_map_placed: 1,
     mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
-    mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0,
+    mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0, mp_kill_reward: 300,
     ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 1])),
 }
 const DEATHMATCH: Cvars = {
-    ...CLASSIC, mp_forcerespawn: 1, mp_round_infinite: 1, mp_buy_anywhere: 1, mp_buytime: -1, mp_maxmoney: 99999, mp_startmoney: 99999, mp_free_armor: 2,
+    // respawn in 1 s with a pistol and armor, buy anywhere; guns are paid for with kills
+    ...CLASSIC, mp_forcerespawn: 1, mp_round_infinite: 1, mp_buy_anywhere: 1, mp_buytime: -1,
+    mp_startmoney: 1000, mp_kill_reward: 750, mp_free_armor: 2,
     mp_respawn_immunitytime: 2, mp_give_player_c4: 0, mp_freezetime: 0, mp_item_staytime: 15, bot_deathmatch: 1,
 }
 const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {
@@ -66,7 +69,7 @@ const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {
 }
 const isMode = (m: string): m is ModeId => m in MODES
 
-type ServerSetup = { name: string; map: string; mode: ModeId; maxPlayers: number; bots: number; skill: number }
+type ServerSetup = { name: string; map: string; mode: ModeId; maxPlayers: number; bots: number; skill: number; offline?: boolean }
 
 // ---------- game files ----------
 
@@ -262,8 +265,8 @@ async function lookUp(code: string) {
         const found = await findLobby(code)
         if (lookingFor !== code) { found.close(); return undefined }
         lobby = found
-        found.onClose(() => {
-            if (playing) setTimeout(() => backToHome('The host closed the lobby.'), 0)
+        found.onClose(reason => {
+            if (playing) setTimeout(() => backToHome(reason ?? 'The host closed the lobby.'), 0)
             else if (lobby === found) { lobby = lobbyInfo = undefined; showLobby('The host closed this lobby.', true) }
         })
         await refreshLobby()
@@ -312,7 +315,12 @@ $('joinBtn').addEventListener('click', async e => {
         })
         if (result.files) await useGameFiles(result.files, true)
         if (!zip) throw new Error('No game files.')
-        await launch(result.net, x => x.Cmd_ExecuteString('connect 127.0.0.1:8080'))
+        const isFfa = (info: LobbyInfo) => info.mode === MODES.ffa.label
+        found.onInfo(info => engine?.Cmd_ExecuteString(`cl_aimassist_ffa ${isFfa(info) ? 1 : 0}`))
+        await launch(result.net, x => {
+            x.Cmd_ExecuteString(`cl_aimassist_ffa ${lobbyInfo && isFfa(lobbyInfo) ? 1 : 0}`)
+            x.Cmd_ExecuteString('connect 127.0.0.1:8080')
+        })
     } catch (err) {
         joinMsg.textContent = (err as Error).message
         if (filesCard.dataset.state === 'busy') showFiles(zip ? 'ready' : 'missing', zip ? 'Game files ready' : MISSING)
@@ -323,7 +331,7 @@ $('joinBtn').addEventListener('click', async e => {
 
 // ---------- hosting ----------
 
-let hosting: { setup: ServerSetup; guests: () => number } | undefined
+let hosting: { setup: ServerSetup; lobby: Awaited<ReturnType<typeof hostLobby>> } | undefined
 
 $('hostBtn').addEventListener('click', async e => {
     const button = e.currentTarget as HTMLButtonElement
@@ -360,7 +368,7 @@ $('hostBtn').addEventListener('click', async e => {
             info: () => ({name: setup.name, map: setup.map, mode: MODES[setup.mode].label, maxPlayers: setup.maxPlayers, bots: setup.bots}),
             gameFiles: async () => files,
         })
-        hosting = {setup, guests: lobbyHost.guests}
+        hosting = {setup, lobby: lobbyHost}
         keepRunningWhenHidden()
         await launch(lobbyHost.net, x => startServer(x, setup))
     } catch (err) {
@@ -394,6 +402,7 @@ $('offBtn').addEventListener('click', () => {
         $('offMsg').textContent = 'Load the game files first (top of the page).'
         return
     }
+    offlineGame = true
     launch(undefined, x => startServer(x, {
         name: 'JOUCS offline',
         map: MAP_RE.test(offMap.value) ? offMap.value : 'de_dust2',
@@ -401,6 +410,7 @@ $('offBtn').addEventListener('click', () => {
         maxPlayers: 16,
         bots: clamp(Number(offBots.input.value), 0, 12),
         skill: clamp(Number(offSkill.value), 0, 3),
+        offline: true,
     }))
 })
 
@@ -411,29 +421,42 @@ function writeServerConfig(x: Xash3D, s: ServerSetup) {
     const cvars: Cvars = {
         ...MODES[s.mode].cvars,
         bot_join_after_player: 0, bot_quota_mode: 'normal', bot_difficulty: s.skill, bot_quota: s.bots,
+        pausable: s.offline ? 1 : 0, // the pause menu pauses offline games; a lobby keeps running for friends
     }
     x.em!.FS.writeFile('/rodir/cstrike/listenserver.cfg',
         Object.entries(cvars).map(([k, v]) => `${k} "${v}"\n`).join(''))
 }
 
-/** bot navigation meshes take ~30 s to build per map, so keep them */
-async function prepareNav(x: Xash3D, map: string) {
+/** bots need a navigation mesh per map, built in about a minute the first time, so keep them */
+async function prepareNav(x: Xash3D, map: string, bots: number) {
     const path = `/rodir/cstrike/maps/${map}.nav`
     const nav = await savedNav(map)
     if (nav) {
         x.em!.FS.writeFile(path, new Uint8Array(nav))
         return
     }
+    if (bots > 0) showNotice(`Bots are learning ${map}. This happens once per map and takes a minute or two; ` +
+        'the round restarts when they are ready.')
     x.waitLog(`${map}.nav' saved`, undefined, 30 * 60_000)
         .then(() => saveNav(map, x.em!.FS.readFile(path)))
         .catch(() => undefined)
+        .finally(() => showNotice(''))
 }
+
+function showNotice(text: string) {
+    $('notice').textContent = text
+    $('notice').hidden = !text
+}
+
+const setFfa = (x: Xash3D, mode: ModeId) => x.Cmd_ExecuteString(`cl_aimassist_ffa ${mode === 'ffa' ? 1 : 0}`)
 
 async function startServer(x: Xash3D, s: ServerSetup) {
     writeServerConfig(x, s)
-    await prepareNav(x, s.map)
+    await prepareNav(x, s.map, s.bots)
+    setFfa(x, s.mode)
     x.Cmd_ExecuteString(`maxplayers ${s.maxPlayers}`)
     x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
+    x.Cmd_ExecuteString('sv_timeout 30') // drop a friend whose browser vanished after 30 s, not 65
     x.Cmd_ExecuteString(`hostname "${s.name}"`)
     x.Cmd_ExecuteString(`map ${s.map}`)
 }
@@ -442,8 +465,35 @@ async function changeMap(map: string, mode: string) {
     if (!hosting || !engine || !maps.includes(map) || !isMode(mode)) return
     Object.assign(hosting.setup, {map, mode}) // the lobby info friends see reads this too
     writeServerConfig(engine, hosting.setup)
-    await prepareNav(engine, map)
+    await prepareNav(engine, map, hosting.setup.bots)
+    setFfa(engine, mode)
     engine.Cmd_ExecuteString(`changelevel ${map}`) // friends stay connected
+    hosting.lobby.broadcastInfo()
+}
+
+function setBots(n: number) {
+    if (!hosting || !engine) return
+    const s = hosting.setup
+    s.bots = clamp(n, 0, Math.min(12, s.maxPlayers - 1 - hosting.lobby.guests()))
+    writeServerConfig(engine, s) // so it lasts through map changes
+    engine.Cmd_ExecuteString(`bot_quota ${s.bots}`)
+    hosting.lobby.broadcastInfo()
+}
+
+function kick(key: string) {
+    const player = hosting?.lobby.players().find(p => p.key === key)
+    if (!player) return
+    hosting!.lobby.kick(key)
+    engine?.Cmd_ExecuteString(`kick "${cleanName(player.name, '')}"`)
+}
+
+// offline, the pause menu really pauses (bots included)
+let paused = false
+let offlineGame = false
+function pauseOffline(pause: boolean) {
+    if (!engine || !offlineGame || pause === paused) return
+    paused = pause
+    engine.Cmd_ExecuteString('pause')
 }
 
 // ---------- in game ----------
@@ -502,13 +552,18 @@ const settingsUi = initSettings({
     host: () => hosting && {
         code: hostCode,
         link: inviteLink(hostCode),
-        guests: hosting.guests(),
+        guests: hosting.lobby.guests(),
         maps,
         modes: Object.entries(MODES).map(([id, m]) => [id, m.label]),
         map: hosting.setup.map,
         mode: hosting.setup.mode,
         change: changeMap,
+        bots: hosting.setup.bots,
+        setBots,
+        players: hosting.lobby.players(),
+        kick,
     },
+    onPause: pauseOffline,
 })
 $('openSettings').addEventListener('click', () => settingsUi.openSettings())
 
@@ -604,6 +659,13 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
     x.Cmd_ExecuteString('con_notifytime 0') // no console text over the game (chat and kill feed are HUD)
     x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away
     applySettings(x, loadSettings()) // controller layout, crosshair, sensitivity, video, audio
+    // aim assist follows the input in use: controller or touch on, mouse off
+    setInputDevice(x, touchControls.checked ? 'touch' : 'mouse')
+    onPadActivity(() => setInputDevice(x, 'pad'))
+    window.addEventListener('mousemove', e => {
+        if (document.pointerLockElement && (e.movementX || e.movementY)) setInputDevice(x, 'mouse')
+    })
+    window.addEventListener('touchstart', () => setInputDevice(x, 'touch'), {passive: true})
     setInterval(() => saveConfig(true), 30_000)
     document.addEventListener('visibilitychange', () => { if (document.hidden) saveConfig(true) })
     window.addEventListener('beforeunload', confirmLeave)

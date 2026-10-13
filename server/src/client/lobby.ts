@@ -91,7 +91,7 @@ class HostNet extends Net {
     }
 }
 
-type Guest = { conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']; joined: boolean }
+type Guest = { conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']; joined: boolean; name: string }
 
 export type HostOptions = {
     code: string
@@ -131,7 +131,7 @@ export async function hostLobby(opts: HostOptions) {
 
         conn.on('open', () => {
             const {game, files} = channels(conn)
-            guest = {conn, game, files, ip, joined: false}
+            guest = {conn, game, files, ip, joined: false, name: ''}
             guests.set(key, guest)
             game.onmessage = e => {
                 if (guest?.joined) net.incoming.enqueue({ip, port: GUEST_PORT, data: new Int8Array(e.data as ArrayBuffer)})
@@ -151,6 +151,7 @@ export async function hostLobby(opts: HostOptions) {
                 return
             }
             guest.joined = true
+            guest.name = String(msg.name).slice(0, 32)
             const data = msg.needFiles ? await opts.gameFiles() : undefined
             conn.send({t: 'welcome', fileSize: data?.size ?? 0} satisfies Msg)
             if (data) sendFile(guest.files, data).catch(() => conn.close())
@@ -159,9 +160,26 @@ export async function hostLobby(opts: HostOptions) {
         conn.on('error', () => conn.close())
     })
 
+    const joined = () => [...guests.entries()].filter(([, g]) => g.joined)
     const close = () => peer.destroy()
     window.addEventListener('pagehide', close)
-    return {net, close, guests: joinedCount}
+    return {
+        net,
+        close,
+        guests: joinedCount,
+        players: () => joined().map(([key, g]) => ({key, name: g.name})),
+        /** tell friends' lobby screens about a new map or mode */
+        broadcastInfo() {
+            for (const [, g] of joined()) g.conn.send({t: 'info', ...info()} satisfies Msg)
+        },
+        kick(key: string) {
+            const g = guests.get(key)
+            if (!g) return
+            g.conn.send({t: 'reject', reason: 'The host removed you from the lobby.'} satisfies Msg)
+            guests.delete(key)
+            setTimeout(() => g.conn.close(), 500)
+        },
+    }
 }
 
 // The host's engine keeps the page busy, so read big blocks and queue many
@@ -206,11 +224,19 @@ export async function findLobby(code: string) {
 
     // a host that just vanishes (closed tab, lost network) may never close the
     // channel cleanly, so watch the connection itself as well
-    let closedHandler = () => undefined as void
+    let closedHandler = (_reason?: string) => undefined as void
+    let infoHandler = (_info: LobbyInfo) => undefined as void
+    let joined = false
     conn.on('close', () => closedHandler())
     game.addEventListener('close', () => closedHandler())
     conn.peerConnection.addEventListener('connectionstatechange', () => {
         if (['failed', 'closed'].includes(conn.peerConnection.connectionState)) closedHandler()
+    })
+    // while playing: the host removed us, or changed the map or mode
+    listeners.add(m => {
+        if (!joined) return
+        if (m.t === 'reject') closedHandler(m.reason)
+        if (m.t === 'info') infoHandler(m as unknown as LobbyInfo)
     })
     peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect() })
 
@@ -226,6 +252,7 @@ export async function findLobby(code: string) {
             conn.send({t: 'join', name, password, needFiles} satisfies Msg)
             const m = await reply
             if (m.t === 'reject') throw new Error(m.reason)
+            joined = true
 
             let blob: Blob | undefined
             if (m.fileSize) {
@@ -252,7 +279,8 @@ export async function findLobby(code: string) {
             return {net, files: blob}
         },
 
-        onClose(fn: () => void) { closedHandler = fn },
+        onClose(fn: (reason?: string) => void) { closedHandler = fn },
+        onInfo(fn: (info: LobbyInfo) => void) { infoHandler = fn },
         close() { peer.destroy() },
     }
 }

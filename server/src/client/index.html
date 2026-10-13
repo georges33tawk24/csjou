@@ -202,17 +202,38 @@
         .toggles { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
         .fine { font-size: 11px; text-align: center; color: rgba(255, 176, 0, 0.45); max-width: 420px; }
 
+        /* top centre: the kill feed is top right; faint until pointed at */
         .fs {
             position: fixed;
-            top: 12px;
-            right: 12px;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
             z-index: 3;
+            opacity: 0.45;
             padding: 7px 12px;
             border: 1px solid var(--border);
             background: var(--panel);
             color: var(--amber);
             font: 13px var(--font);
             cursor: pointer;
+        }
+        .fs:hover, .fs:focus-visible { opacity: 1; }
+
+        .notice {
+            position: fixed;
+            top: 44px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 3;
+            width: min(560px, calc(100vw - 32px));
+            margin: 0;
+            padding: 8px 14px;
+            border: 1px solid var(--border);
+            background: var(--panel);
+            color: var(--amber);
+            font-size: 13px;
+            text-align: center;
+            pointer-events: none;
         }
 
         /* ---------- team / character / buy / quick screens ---------- */
@@ -505,6 +526,7 @@
 <div id="game">
     <div id="logo">JOUCS</div>
     <button id="fsButton" class="fs" hidden>Fullscreen</button>
+    <p id="notice" class="notice" role="status" hidden></p>
     <div id="menu" class="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menuTitle">
         <div class="menu-panel">
             <header class="menu-head">

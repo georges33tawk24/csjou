@@ -1,7 +1,7 @@
 name: build
 on:
   push:
-    branches: [main]
+    branches-ignore: [gh-pages, 'page-*']
   workflow_dispatch:
 
 permissions:
@@ -24,12 +24,15 @@ jobs:
           fi
       - name: Publish to GitHub Pages
         # One fresh commit each time keeps the branch small. A fixed address
-        # matters: browsers keep the game files per site.
+        # matters: browsers keep the game files per site. Other branches go to
+        # page-<branch> for testing instead of the live site.
         run: |
+          target=gh-pages
+          [ "$GITHUB_REF_NAME" = main ] || target="page-$GITHUB_REF_NAME"
           test ! -e page/valve.zip
           touch page/.nojekyll
           cd page
-          git init -q -b gh-pages
+          git init -q -b "$target"
           git add -A
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "JOUCS page from ${GITHUB_SHA::7}"
-          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" "$target"

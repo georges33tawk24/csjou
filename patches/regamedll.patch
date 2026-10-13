@@ -1,0 +1,58 @@
+diff --git a/regamedll/dlls/bot/cs_bot_learn.cpp b/regamedll/dlls/bot/cs_bot_learn.cpp
+index e68a77a..7221d5b 100644
+--- a/regamedll/dlls/bot/cs_bot_learn.cpp
++++ b/regamedll/dlls/bot/cs_bot_learn.cpp
+@@ -28,7 +28,7 @@
+ 
+ #include "precompiled.h"
+ 
+-const float updateTimesliceDuration = 0.5f;
++const float updateTimesliceDuration = 0.01f;
+ 
+ unsigned int _generationIndex = 0; // used for iterating nav areas during generation process
+ 
+diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
+index 2c6d9fb..7312a96 100644
+--- a/regamedll/dlls/game.cpp
++++ b/regamedll/dlls/game.cpp
+@@ -108,6 +108,7 @@ cvar_t scoreboard_showdefkit = { "mp_scoreboard_showdefkit", "1", FCVAR_SERVER,
+ cvar_t game_version          = { "game_version", APP_VERSION, FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t maxmoney              = { "mp_maxmoney", "16000", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t round_infinite        = { "mp_round_infinite", "0", FCVAR_SERVER, 0.0f, nullptr };
++cvar_t kill_reward           = { "mp_kill_reward", "300", FCVAR_SERVER, 0.0f, nullptr }; // JOUCS: money for killing an enemy
+ cvar_t hegrenade_penetration = { "mp_hegrenade_penetration", "0", 0, 0.0f, nullptr };
+ cvar_t nadedrops             = { "mp_nadedrops", "0", 0, 0.0f, nullptr };
+ cvar_t weapondrop            = { "mp_weapondrop", "1", 0, 1.0f, nullptr };
+@@ -388,6 +389,7 @@ void EXT_FUNC GameDLLInit()
+ 	CVAR_REGISTER(&game_version);
+ 	CVAR_REGISTER(&maxmoney);
+ 	CVAR_REGISTER(&round_infinite);
++	CVAR_REGISTER(&kill_reward);
+ 	CVAR_REGISTER(&hegrenade_penetration);
+ 	CVAR_REGISTER(&nadedrops);
+ 	CVAR_REGISTER(&weapondrop);
+diff --git a/regamedll/dlls/game.h b/regamedll/dlls/game.h
+index ecf1001..ad581a1 100644
+--- a/regamedll/dlls/game.h
++++ b/regamedll/dlls/game.h
+@@ -137,6 +137,7 @@ extern cvar_t sk_scientist_heal3;
+ 
+ extern cvar_t maxmoney;
+ extern cvar_t round_infinite;
++extern cvar_t kill_reward;
+ extern cvar_t hegrenade_penetration;
+ extern cvar_t nadedrops;
+ extern cvar_t weapondrop;
+diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
+index 2b91a50..e0a4b95 100644
+--- a/regamedll/dlls/multiplay_gamerules.cpp
++++ b/regamedll/dlls/multiplay_gamerules.cpp
+@@ -4049,7 +4049,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
+ 				UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Assassinated_The_VIP\"\n", STRING(killer->pev->netname), GETPLAYERUSERID(killer->edict()), GETPLAYERAUTHID(killer->edict()));
+ 			}
+ 			else
+-				killer->AddAccount(REWARD_KILLED_ENEMY, RT_ENEMY_KILLED);
++				killer->AddAccount(int(kill_reward.value), RT_ENEMY_KILLED);
+ 
+ 			if (!(killer->m_flDisplayHistory & DHF_ENEMY_KILLED))
+ 			{

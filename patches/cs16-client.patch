@@ -1,0 +1,182 @@
+diff --git a/3rdparty/ReGameDLL_CS b/3rdparty/ReGameDLL_CS
+--- a/3rdparty/ReGameDLL_CS
++++ b/3rdparty/ReGameDLL_CS
+@@ -1 +1 @@
+-Subproject commit 1bffd442191715a956a9db3a63cbe43956f92953
++Subproject commit 1bffd442191715a956a9db3a63cbe43956f92953-dirty
+diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
+index 036da3f..1d72bb1 100644
+--- a/cl_dll/input/input_xash3d.cpp
++++ b/cl_dll/input/input_xash3d.cpp
+@@ -37,6 +37,8 @@ extern bool evdev_open;
+ #define IMPULSE_UP		4
+ 
+ bool CL_IsDead();
++void JOUCS_AimAssistInit( void );
++void JOUCS_AimAssist( float frametime, const float *viewangles, bool moving, float &yaw, float &pitch );
+ 
+ void IN_ToggleButtons( float forwardmove, float sidemove )
+ {
+@@ -176,6 +178,8 @@ void IN_Move( float frametime, usercmd_t *cmd )
+ 		rel_yaw *= sensitivity->value;
+ 		rel_pitch *= sensitivity->value;
+ 	}
++	JOUCS_AimAssist( frametime, viewangles, ac_movecount && ( ac_forwardmove || ac_sidemove ), rel_yaw, rel_pitch );
++
+ 	if(gHUD.m_MOTD.cl_hide_motd->value == 0.0f && gHUD.m_MOTD.m_bShow)
+ 	{
+ 		gHUD.m_MOTD.scroll += rel_pitch;
+@@ -280,4 +284,5 @@ void IN_Init( void )
+ 	evdev_grab = gEngfuncs.pfnGetCvarPointer("evdev_grab");
+ 
+ 	ac_forwardmove = ac_sidemove = rel_yaw = rel_pitch = 0;
++	JOUCS_AimAssistInit();
+ }
+diff --git a/cl_dll/input/joucs_aimassist.cpp b/cl_dll/input/joucs_aimassist.cpp
+new file mode 100644
+index 0000000..c2265e7
+--- /dev/null
++++ b/cl_dll/input/joucs_aimassist.cpp
+@@ -0,0 +1,142 @@
++// JOUCS aim assist for controller and touch players.
++//
++// The page sets cl_aimassist (0 = off ... 1 = strongest) only while a
++// controller or the touch screen is the input in use, so mouse players never
++// get it. With an enemy close to the crosshair and in sight, turning slows
++// down (staying on target is easier) and, while the player is aiming or
++// moving, the view is pulled gently towards them. Walls block it.
++// cl_aimassist_ffa 1 counts teammates as enemies (free-for-all).
++
++#include "hud.h"
++#include "cl_util.h"
++#include "const.h"
++#include "entity_state.h"
++#include "cl_entity.h"
++#include "pm_defs.h"
++#include "event_api.h"
++#include <math.h>
++
++bool CL_IsDead();
++
++static cvar_t *cl_aimassist;
++static cvar_t *cl_aimassist_ffa;
++static cvar_t *cl_aimassist_target; // index of the player being assisted onto, 0 = none (for testing)
++
++static const float RAD2DEG = 57.29578f;
++
++void JOUCS_AimAssistInit( void )
++{
++	cl_aimassist = gEngfuncs.pfnRegisterVariable( "cl_aimassist", "0", 0 );
++	cl_aimassist_ffa = gEngfuncs.pfnRegisterVariable( "cl_aimassist_ffa", "0", 0 );
++	cl_aimassist_target = gEngfuncs.pfnRegisterVariable( "cl_aimassist_target", "0", 0 );
++}
++
++static float AngleDiff( float a, float b )
++{
++	float d = fmodf( a - b, 360.0f );
++	if( d > 180.0f )
++		d -= 360.0f;
++	else if( d < -180.0f )
++		d += 360.0f;
++	return d;
++}
++
++static bool InSight( Vector from, Vector to )
++{
++	pmtrace_t tr;
++
++	gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( false, true );
++	gEngfuncs.pEventAPI->EV_PushPMStates();
++	gEngfuncs.pEventAPI->EV_SetSolidPlayers( -1 );
++	gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++	gEngfuncs.pEventAPI->EV_PlayerTrace( from, to, PM_WORLD_ONLY, -1, &tr );
++	gEngfuncs.pEventAPI->EV_PopPMStates();
++
++	return tr.fraction >= 0.98f;
++}
++
++// yaw, pitch: this frame's look input in degrees (after sensitivity), adjusted in place
++void JOUCS_AimAssist( float frametime, const float *viewangles, bool moving, float &yaw, float &pitch )
++{
++	int target = 0;
++	float bestErr = 0.0f, bestYaw = 0.0f, bestPitch = 0.0f, bestZone = 1.0f;
++	cl_entity_t *me = gEngfuncs.GetLocalPlayer();
++
++	if( cl_aimassist && cl_aimassist->value > 0.0f && me && !CL_IsDead() && !g_iUser1 )
++	{
++		const int myTeam = g_PlayerExtraInfo[me->index].teamnumber;
++		const bool ffa = cl_aimassist_ffa->value != 0.0f;
++		Vector eye;
++
++		gEngfuncs.pEventAPI->EV_LocalPlayerViewheight( eye );
++		eye = eye + me->origin;
++
++		for( int i = 1; i <= gEngfuncs.GetMaxClients() && i <= MAX_PLAYERS; i++ )
++		{
++			if( i == me->index )
++				continue;
++
++			const extra_player_info_t &info = g_PlayerExtraInfo[i];
++			if( info.dead || ( info.teamnumber != TEAM_TERRORIST && info.teamnumber != TEAM_CT ))
++				continue;
++			if( !ffa && info.teamnumber == myTeam )
++				continue;
++
++			cl_entity_t *ent = gEngfuncs.GetEntityByIndex( i );
++			// not sent this frame = out of sight of the server's visibility check
++			if( !ent || !ent->player || ent->curstate.messagenum < me->curstate.messagenum )
++				continue;
++
++			// chest height: a standing player's origin is the waist
++			Vector aim = ent->origin;
++			aim.z += ent->curstate.usehull == 1 ? 2.0f : 10.0f;
++
++			Vector d = aim - eye;
++			const float dist = d.Length();
++			if( dist < 24.0f || dist > 4000.0f )
++				continue;
++
++			const float eYaw = AngleDiff( atan2f( d.y, d.x ) * RAD2DEG, viewangles[YAW] );
++			const float ePitch = -atan2f( d.z, d.Length2D() ) * RAD2DEG - viewangles[PITCH];
++			const float err = sqrtf( eYaw * eYaw + ePitch * ePitch );
++
++			// a little wider than the player model, between 2 and 12 degrees
++			float zone = atanf( 36.0f / dist ) * RAD2DEG;
++			zone = max( 2.0f, min( 12.0f, zone ));
++
++			if( err > zone || ( target && err >= bestErr ))
++				continue;
++			if( !InSight( eye, aim ))
++				continue;
++
++			target = i;
++			bestErr = err;
++			bestYaw = eYaw;
++			bestPitch = ePitch;
++			bestZone = zone;
++		}
++	}
++
++	if( cl_aimassist_target && (int)cl_aimassist_target->value != target )
++		gEngfuncs.Cvar_SetValue( (char *)"cl_aimassist_target", (float)target );
++
++	if( !target )
++		return;
++
++	const float strength = min( cl_aimassist->value, 1.0f );
++	const float closeness = 1.0f - bestErr / bestZone;
++
++	// slow down: up to 45% right on the target
++	const float slow = 1.0f - 0.45f * strength * closeness;
++	yaw *= slow;
++	pitch *= slow;
++
++	// pull: only while aiming or moving, never on a still view, and capped
++	if( moving || yaw != 0.0f || pitch != 0.0f )
++	{
++		const float k = min( 1.0f, 3.0f * strength * frametime );
++		const float cap = 20.0f * strength * frametime; // degrees per second at most
++		yaw += max( -cap, min( cap, bestYaw * k ));
++		pitch += max( -cap, min( cap, bestPitch * k ));
++	}
++}

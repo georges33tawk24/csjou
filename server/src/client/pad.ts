@@ -32,3 +32,47 @@ export function watchPad(active: () => boolean, onPress: (button: number) => voi
     }
     requestAnimationFrame(tick)
 }
+
+// ---------- what the game sees ----------
+// The engine reads the controller through navigator.getGamepads(), so the
+// right stick is shaped here: a round deadzone, then a response curve that
+// makes small movements aim finely while full tilt still turns at full speed.
+// Calls also report controller use, which switches aim assist on.
+
+let stick = {deadzone: 0.12, curve: 2}
+let lastButtons: boolean[] = []
+let activity: (() => void) | undefined
+
+export function shapeRightStick(deadzone: number, curve: number) {
+    stick = {deadzone: Math.min(0.9, Math.max(0, deadzone)), curve: Math.max(1, curve)}
+}
+
+export function onPadActivity(fn: () => void) {
+    activity = fn
+}
+
+/** right stick (x, y) after deadzone and curve; same direction, new length */
+export function shapeStick(x: number, y: number, deadzone = stick.deadzone, curve = stick.curve): [number, number] {
+    const m = Math.hypot(x, y)
+    if (m <= deadzone) return [0, 0]
+    const out = Math.pow(Math.min(1, (m - deadzone) / (1 - deadzone)), curve)
+    return [x / m * out, y / m * out]
+}
+
+function shaped(p: Gamepad): Gamepad {
+    const axes = [...p.axes]
+    if (p.mapping === 'standard' && axes.length >= 4) [axes[2], axes[3]] = shapeStick(axes[2], axes[3])
+    // a newly pressed button or a pushed stick (not one held down while using the mouse)
+    const buttons = p.buttons.map(b => b.pressed)
+    if (activity && (buttons.some((b, i) => b && !lastButtons[i]) || p.axes.some(a => Math.abs(a) > 0.3))) activity()
+    lastButtons = buttons
+    return {
+        id: p.id, index: p.index, connected: p.connected, mapping: p.mapping, timestamp: p.timestamp,
+        buttons: p.buttons, axes, vibrationActuator: p.vibrationActuator,
+    } as unknown as Gamepad
+}
+
+const rawGetGamepads = navigator.getGamepads?.bind(navigator)
+if (rawGetGamepads) {
+    navigator.getGamepads = () => rawGetGamepads().map(p => p && shaped(p)) as ReturnType<Navigator['getGamepads']>
+}

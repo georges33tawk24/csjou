@@ -1,5 +1,5 @@
 import type {Xash3D} from 'xash3d-fwgs'
-import {BTN, pressedNow, watchPad} from './pad'
+import {BTN, pressedNow, shapeRightStick, watchPad} from './pad'
 
 // JOUCS settings (controller, mouse, crosshair, video, audio) and the pause
 // screen. Settings live in localStorage and are applied as console commands on
@@ -10,6 +10,8 @@ export type Settings = {
     lookY: number
     invertLook: boolean
     deadzone: number // percent of stick travel
+    aimAssist: number // percent, controller and touch only
+    aimCurve: number // 1 = linear; higher = finer aim near the centre
     crouchToggle: boolean
     mouseSens: number
     invertMouse: boolean
@@ -84,7 +86,7 @@ const PAD_BUTTONS = [
 const defaultPad = () => Object.fromEntries(ACTIONS.map(a => [a.id, a.key]))
 
 const DEFAULTS: Omit<Settings, 'pad'> = {
-    lookX: 200, lookY: 140, invertLook: false, deadzone: 12, crouchToggle: false,
+    lookX: 200, lookY: 140, invertLook: false, deadzone: 12, aimAssist: 60, aimCurve: 2, crouchToggle: false,
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
@@ -116,7 +118,12 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
     const custom = s.crossStyle === 'custom' ? 1 : 0
     const dyn = s.crossDynamic ? 1 : 0
     return [
-        ...['forward', 'side', 'pitch', 'yaw'].map(axis => `joy_${axis}_deadzone ${dz}`),
+        // the page shapes the right stick itself (round deadzone + curve, see pad.ts)
+        `joy_forward_deadzone ${dz}`,
+        `joy_side_deadzone ${dz}`,
+        'joy_pitch_deadzone 0',
+        'joy_yaw_deadzone 0',
+        `cl_aimassist ${inputDevice === 'mouse' ? 0 : s.aimAssist / 100}`,
         `sensitivity ${s.mouseSens}`,
         `m_pitch ${s.invertMouse ? -0.022 : 0.022}`,
         `brightness ${s.brightness}`,
@@ -158,7 +165,20 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
 }
 
 export function applySettings(x: Xash3D, s: Settings) {
+    shapeRightStick(s.deadzone / 100, s.aimCurve)
     for (const cmd of engineCommands(s, !openScreens.size)) x.Cmd_ExecuteString(cmd)
+}
+
+// ---------- aim assist follows the input in use ----------
+// Mouse players never get it; a controller or the touch screen switches it on.
+
+type InputDevice = 'mouse' | 'pad' | 'touch'
+let inputDevice: InputDevice = 'mouse'
+
+export function setInputDevice(x: Xash3D, device: InputDevice) {
+    if (device === inputDevice) return
+    inputDevice = device
+    x.Cmd_ExecuteString(`cl_aimassist ${device === 'mouse' ? 0 : loadSettings().aimAssist / 100}`)
 }
 
 // ---------- JOUCS screens take the controller ----------
@@ -248,6 +268,11 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEl
     return e
 }
 
+function withId<T extends HTMLElement>(e: T, id: string): T {
+    e.dataset.id = id
+    return e
+}
+
 function button(label: string, fn: () => void, className = 'secondary') {
     const b = el('button', {className, textContent: label})
     b.addEventListener('click', fn)
@@ -264,6 +289,10 @@ export type HostPanel = {
     map: string
     mode: string
     change: (map: string, mode: string) => void
+    bots: number
+    setBots: (n: number) => void
+    players: { key: string; name: string }[]
+    kick: (key: string) => void
 }
 
 type Hooks = {
@@ -273,6 +302,7 @@ type Hooks = {
     enterFullscreen: () => void
     openQuick: () => void
     host: () => HostPanel | undefined
+    onPause: (paused: boolean) => void // offline games actually pause
 }
 
 export function initSettings(hooks: Hooks) {
@@ -409,6 +439,8 @@ export function initSettings(hooks: Hooks) {
             range('Look speed (left / right)', 'lookX', 50, 600, 10, v => String(v)),
             range('Look speed (up / down)', 'lookY', 50, 600, 10, v => String(v)),
             toggle('Invert up / down', 'invertLook'),
+            range('Aim assist (controller and touch only)', 'aimAssist', 0, 100, 5, v => v ? `${v}%` : 'Off'),
+            range('Fine aim (response curve)', 'aimCurve', 1, 3, 0.1, v => v === 1 ? 'Linear' : v.toFixed(1)),
             range('Stick deadzone', 'deadzone', 0, 40, 1, v => `${v}%`),
             toggle('Toggle crouch (press once instead of holding)', 'crouchToggle'),
             ...remapRows(),
@@ -451,6 +483,13 @@ export function initSettings(hooks: Hooks) {
                 copy),
             el('div', {className: 'host-change'}, mode, map,
                 button('Change map', () => { close(); h.change(map.value, mode.value) })),
+            el('div', {className: 'host-change'},
+                el('span', {className: 'host-label', textContent: `Bots: ${h.bots}`}),
+                withId(button('− Remove a bot', () => { h.setBots(h.bots - 1); render('bots-less') }), 'bots-less'),
+                withId(button('+ Add a bot', () => { h.setBots(h.bots + 1); render('bots-more') }), 'bots-more')),
+            ...h.players.map(p => el('div', {className: 'host-change'},
+                el('span', {className: 'host-label', textContent: p.name || 'Friend'}),
+                button('Remove from lobby', () => { h.kick(p.key); render() }))),
         ]
     }
 
@@ -513,6 +552,7 @@ export function initSettings(hooks: Hooks) {
         if (opening) {
             document.exitPointerLock?.()
             screenOpen(hooks.engine(), 'settings', true)
+            if (hooks.engine()) hooks.onPause(true)
             if (!watching) {
                 watching = true
                 watchPad(() => {
@@ -532,6 +572,7 @@ export function initSettings(hooks: Hooks) {
         root.hidden = true
         const x = hooks.engine()
         screenOpen(x, 'settings', false)
+        if (x) hooks.onPause(false)
         if (x && relock) {
             // only works when this came from a click or key press; otherwise click the game
             try {

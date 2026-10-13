@@ -3,11 +3,15 @@ import {type Net, Xash3D} from 'xash3d-fwgs'
 import xashURL from 'xash3d-fwgs/xash.wasm?url'
 import gl4esURL from 'xash3d-fwgs/libref_webgl2.wasm?url'
 import '@fontsource/black-ops-one/latin-400.css' // stencil title font (OFL)
-import {mapsIn, openGameFiles, savedGameFiles, saveGameFiles, savedNav, saveNav} from './files'
-import {CODE_RE, findLobby, hostLobby, type Lobby, type LobbyInfo, newLobbyCode} from './lobby'
+import {
+    clearExtras, type Extra, extraMaps, mapsIn, openGameFiles, readExtras, savedExtras, savedGameFiles, saveExtra,
+    saveGameFiles, savedNav, saveNav,
+} from './files'
+import {CODE_RE, findLobby, guestNet, hostLobby, type Lobby, type LobbyInfo, newLobbyCode, probeLobbies} from './lobby'
 import {initMenus, menuBackground} from './menus'
-import {onPadActivity} from './pad'
-import {applySettings, initSettings, loadSettings, setInputDevice} from './settings'
+import {onPadActivity, rumble} from './pad'
+import {applySettings, initSettings, loadSettings, screenOpen, setInputDevice, usingController} from './settings'
+import {createStats, lastMatch, loadTotals, parseKill, showSummary, type Summary, summaryTable} from './stats'
 import {startVoice, type Voice, type VoicePlayer} from './voice'
 import type Peer from 'peerjs'
 
@@ -42,7 +46,7 @@ const ENGINE = {
 // ---------- game modes (ReGameDLL settings) ----------
 // Every mode sets all of these, so the host can switch modes between maps.
 
-type ModeId = 'classic' | 'tdm' | 'ffa' | 'knife'
+type ModeId = 'classic' | 'coop' | 'tdm' | 'ffa' | 'gungame' | 'knife'
 type Cvars = Record<string, string | number>
 
 const BOT_WEAPONS = ['pistols', 'shotguns', 'sub_machine_guns', 'rifles', 'machine_guns', 'grenades', 'snipers', 'shield']
@@ -52,6 +56,8 @@ const CLASSIC: Cvars = {
     mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
     mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0, mp_kill_reward: 300,
     sv_alltalk: 1, // voice chat is a party chat: everyone hears everyone
+    humans_join_team: 'any', bot_join_team: 'any', mp_autoteambalance: 1, mp_limitteams: 2,
+    mp_gungame: 0, mp_weapondrop: 1, mp_infinite_ammo: 0, mp_infinite_grenades: 0,
     ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 1])),
 }
 const DEATHMATCH: Cvars = {
@@ -62,8 +68,16 @@ const DEATHMATCH: Cvars = {
 }
 const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {
     classic: {label: 'Classic: bomb & hostage rounds', cvars: CLASSIC},
+    coop: {label: 'Co-op: friends vs bots', cvars: {
+        ...CLASSIC, humans_join_team: 'CT', bot_join_team: 'T', mp_autoteambalance: 0, mp_limitteams: 0,
+    }},
     tdm: {label: 'Team deathmatch', cvars: DEATHMATCH},
     ffa: {label: 'Free-for-all deathmatch', cvars: {...DEATHMATCH, mp_freeforall: 1}},
+    // every kill gives the next gun (the game rules do it: mp_gungame, patches/regamedll.patch)
+    gungame: {label: 'Gun Game: a new gun every kill', cvars: {
+        ...DEATHMATCH, mp_freeforall: 1, mp_gungame: 1, mp_buytime: 0, mp_buy_anywhere: 0, mp_startmoney: 0,
+        mp_kill_reward: 0, mp_weapons_allow_map_placed: 0, mp_weapondrop: 0, mp_infinite_ammo: 2, mp_infinite_grenades: 1,
+    }},
     knife: {label: 'Knife arena', cvars: {
         ...DEATHMATCH, mp_buytime: 0, mp_buy_anywhere: 0, mp_weapons_allow_map_placed: 0,
         mp_t_default_weapons_secondary: '', mp_ct_default_weapons_secondary: '',
@@ -71,6 +85,13 @@ const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {
     }},
 }
 const isMode = (m: string): m is ModeId => m in MODES
+const modeByLabel = (label?: string) => (Object.keys(MODES) as ModeId[]).find(id => MODES[id].label === label)
+
+/** what the client needs to know about the mode: who aim assist targets, which teams to offer */
+function clientMode(x: Xash3D, mode?: ModeId) {
+    x.Cmd_ExecuteString(`cl_aimassist_ffa ${mode === 'ffa' || mode === 'gungame' ? 1 : 0}`)
+    menus?.setCoop(mode === 'coop')
+}
 
 type ServerSetup = { name: string; map: string; mode: ModeId; maxPlayers: number; bots: number; skill: number; offline?: boolean }
 
@@ -79,6 +100,20 @@ type ServerSetup = { name: string; map: string; mode: ModeId; maxPlayers: number
 let zip: JSZip | undefined
 let zipBlob: Blob | undefined
 let maps: string[] = []
+let extras: Extra[] = [] // fan maps from this device or a host
+
+function updateMaps() {
+    maps = [...new Set([...zip ? mapsIn(zip) : [], ...extraMaps(extras)])].sort()
+    fillMaps()
+    const names = extraMaps(extras)
+    $('extrasText').textContent = names.length ? `Extra maps: ${names.join(', ')}` : ''
+    $('clearExtras').hidden = !names.length
+}
+
+function addExtras(list: Extra[]) {
+    extras = [...extras.filter(e => !list.some(n => n.path === e.path)), ...list]
+    updateMaps()
+}
 
 const filesCard = $('files')
 function showFiles(state: 'missing' | 'busy' | 'ready' | 'error', text: string, percent = state === 'ready' ? 100 : 0) {
@@ -98,9 +133,8 @@ async function useGameFiles(blob: Blob, save: boolean) {
     const kept = !save || await saveGameFiles(blob)
     zip = z
     zipBlob = blob
-    maps = mapsIn(z)
-    fillMaps()
-    showFiles('ready', `Game files ready · ${maps.length} maps · ` +
+    updateMaps()
+    showFiles('ready', `Game files ready · ${mapsIn(z).length} maps · ` +
         (kept ? 'saved on this device' : 'this browser could not keep them, so you will need to load them again next time'))
     menuBackground(z).then(url => { store.set('joucsArt', url); showArt(url) }).catch(() => undefined)
 }
@@ -114,6 +148,29 @@ savedGameFiles()
 $<HTMLInputElement>('filesInput').addEventListener('change', e => {
     const file = (e.target as HTMLInputElement).files?.[0]
     if (file) useGameFiles(file, true).catch(err => showFiles('error', (err as Error).message))
+})
+
+savedExtras().then(addExtras).catch(() => undefined)
+
+$<HTMLInputElement>('mapsInput').addEventListener('change', async e => {
+    const input = e.target as HTMLInputElement
+    const msg = $('extrasText')
+    try {
+        if (!zip) throw new Error('Load the game files first, then add maps.')
+        const added = await readExtras([...input.files ?? []], path => !!zip?.file(path))
+        if (!extraMaps(added).length && !added.length) throw new Error('No maps found: pick .bsp, .wad or .zip files.')
+        for (const x of added) await saveExtra(x)
+        addExtras(added)
+    } catch (err) {
+        msg.textContent = (err as Error).message
+    }
+    input.value = ''
+})
+
+$('clearExtras').addEventListener('click', async () => {
+    await clearExtras()
+    extras = []
+    updateMaps()
 })
 
 // the touch layout and other client extras, served with the page
@@ -305,23 +362,35 @@ $('joinBtn').addEventListener('click', async e => {
     }
     button.disabled = true
     try {
-        const found = await lookUp(joinCode.value)
+        const code = joinCode.value.toUpperCase()
+        const found = await lookUp(code)
         if (!found || !lobbyInfo) return
-        const pw = joinPassword.value.trim()
-        if (lobbyInfo.private && !pw) throw new Error('This lobby needs a password. Ask the host.')
+        const password = joinPassword.value.trim()
+        if (lobbyInfo.private && !password) throw new Error('This lobby needs a password. Ask the host.')
         let started = 0
-        const result = await found.join(playerName(), pw, !zip, (got, total) => {
-            started ||= performance.now()
-            const mbps = got / 1e6 / Math.max(1, (performance.now() - started) / 1000)
-            showFiles('busy', `Getting the game files from the host: ${Math.round(got / 1e6)} of ${Math.round(total / 1e6)} MB ` +
-                `(${mbps.toFixed(1)} MB/s). Only needed once.`, got / total * 100)
+        const name = playerName()
+        const result = await found.join({
+            name, password, needFiles: !zip, have: extras.map(x => x.path),
+            progress(got, total) {
+                started ||= performance.now()
+                const mbps = got / 1e6 / Math.max(1, (performance.now() - started) / 1000)
+                showFiles('busy', `Getting the game files from the host: ${Math.round(got / 1e6)} of ${Math.round(total / 1e6)} MB ` +
+                    `(${mbps.toFixed(1)} MB/s). Only needed once.`, got / total * 100)
+            },
         })
         if (result.files) await useGameFiles(result.files, true)
+        for (const x of result.extras) await saveExtra(x)
+        addExtras(result.extras)
         if (!zip) throw new Error('No game files.')
-        const isFfa = (info: LobbyInfo) => info.mode === MODES.ffa.label
-        found.onInfo(info => engine?.Cmd_ExecuteString(`cl_aimassist_ffa ${isFfa(info) ? 1 : 0}`))
-        await launch(result.net, x => {
-            x.Cmd_ExecuteString(`cl_aimassist_ffa ${lobbyInfo && isFfa(lobbyInfo) ? 1 : 0}`)
+        rememberLobby(code, lobbyInfo.name)
+
+        const link = guestNet()
+        link.attach(result.game)
+        const session = {code, name, password, token: result.token, attach: link.attach}
+        follow(found, session)
+        current = {map: lobbyInfo.map, mode: lobbyInfo.mode}
+        await launch(link.net, x => {
+            clientMode(x, modeByLabel(lobbyInfo?.mode))
             x.Cmd_ExecuteString('connect 127.0.0.1:8080')
         })
         startLobbyVoice(found.peer, fn => found.voice(fn))
@@ -332,6 +401,102 @@ $('joinBtn').addEventListener('click', async e => {
         button.disabled = false
     }
 })
+
+type Session = { code: string; name: string; password: string; token: string; attach: (game: RTCDataChannel) => void }
+
+/** while playing in someone's lobby: map/mode changes, being removed, and dropping out */
+function follow(l: Lobby, session: Session) {
+    l.onInfo(info => {
+        if (info.map !== current.map || info.mode !== current.mode) endOfMap()
+        current = {map: info.map, mode: info.mode}
+        if (engine) clientMode(engine, modeByLabel(info.mode))
+    })
+    l.onClose(reason => {
+        if (!playing) return
+        if (reason) setTimeout(() => backToHome(reason), 0)
+        else reconnect(l, session)
+    })
+}
+
+/**
+ * The connection to the host dropped (Wi-Fi hiccup, phone switching networks).
+ * Join again with our token: the host gives back our old place, so the game
+ * carries on where it was if we're back within about 30 seconds.
+ */
+let reconnecting = false
+async function reconnect(old: Lobby, session: Session) {
+    if (reconnecting) return
+    reconnecting = true
+    old.onClose(() => undefined)
+    old.close()
+    voice?.stop()
+    voice = undefined
+    showNotice('Lost the connection to the host. Reconnecting…')
+    const until = Date.now() + 28_000
+    while (Date.now() < until) {
+        try {
+            const again = await findLobby(session.code)
+            const r = await again.join({
+                name: session.name, password: session.password, needFiles: false,
+                have: extras.map(x => x.path), resume: session.token,
+            })
+            session.token = r.token
+            session.attach(r.game)
+            lobby = again
+            follow(again, session)
+            showNotice('')
+            reconnecting = false
+            startLobbyVoice(again.peer, fn => again.voice(fn))
+            return
+        } catch {
+            await new Promise(r => setTimeout(r, 3000))
+        }
+    }
+    backToHome('Lost the connection to the host.')
+}
+
+// ---------- recent lobbies ----------
+
+type Recent = { code: string; name: string }
+
+function recentLobbies(): Recent[] {
+    try { return (JSON.parse(store.get('joucsRecent', '[]')) as Recent[]).filter(r => CODE_RE.test(r.code) && r.code !== hostCode) }
+    catch { return [] }
+}
+
+function rememberLobby(code: string, name: string) {
+    store.set('joucsRecent', JSON.stringify([{code, name}, ...recentLobbies().filter(r => r.code !== code)].slice(0, 6)))
+}
+
+/** recent lobbies with whether they're open right now; click one to look it up */
+async function showRecent() {
+    const list = recentLobbies()
+    $('recent').hidden = !list.length
+    if (!list.length) return
+    const rows = new Map(list.map(r => {
+        const b = document.createElement('button')
+        b.className = 'recent-row'
+        b.innerHTML = '<span class="dot"></span><strong></strong><span class="recent-info">checking…</span>'
+        b.querySelector('strong')!.textContent = r.name || r.code
+        b.addEventListener('click', () => {
+            joinCode.value = r.code
+            joinMsg.textContent = ''
+            lookUp(r.code)
+        })
+        return [r.code, b] as const
+    }))
+    $('recentList').replaceChildren(...rows.values())
+    const open = await probeLobbies(list.map(r => r.code))
+    for (const [code, b] of rows) {
+        const info = open.get(code)
+        b.querySelector('.dot')!.classList.toggle('on', !!info)
+        b.querySelector('.recent-info')!.textContent = info
+            ? `${info.map} · ${info.mode} · ${info.players}/${info.maxPlayers}` : `offline · ${code}`
+        b.classList.toggle('offline', !info)
+    }
+}
+showRecent().catch(() => undefined)
+setInterval(() => { if (!playing && !$('join').hidden) showRecent().catch(() => undefined) }, 30_000)
 
 // ---------- hosting ----------
 
@@ -361,6 +526,7 @@ $('hostBtn').addEventListener('click', async e => {
         bots: clamp(Number(hostBots.input.value), 0, Math.min(12, maxPlayers - 2)),
         skill: clamp(Number(hostSkill.value), 0, 3),
     }
+    if (setup.mode === 'coop' && !setup.bots) setup.bots = Math.min(5, maxPlayers - 2) // co-op needs bots to fight
     msg.className = 'msg'
     msg.textContent = 'Opening your lobby…'
     button.disabled = true
@@ -371,6 +537,9 @@ $('hostBtn').addEventListener('click', async e => {
             password: isPrivate ? password : '',
             info: () => ({name: setup.name, map: setup.map, mode: MODES[setup.mode].label, maxPlayers: setup.maxPlayers, bots: setup.bots}),
             gameFiles: async () => files,
+            extras: async () => extras,
+            // a friend dropped out and didn't come back: free their place in the game now
+            onLeft: name => engine?.Cmd_ExecuteString(`kick "${cleanName(name, '')}"`),
         })
         hosting = {setup, lobby: lobbyHost}
         keepRunningWhenHidden()
@@ -408,7 +577,7 @@ $('offBtn').addEventListener('click', () => {
         return
     }
     offlineGame = true
-    launch(undefined, x => startServer(x, {
+    const setup: ServerSetup = {
         name: 'JOUCS offline',
         map: MAP_RE.test(offMap.value) ? offMap.value : 'de_dust2',
         mode: isMode(offMode.value) ? offMode.value : 'classic',
@@ -416,7 +585,9 @@ $('offBtn').addEventListener('click', () => {
         bots: clamp(Number(offBots.input.value), 0, 12),
         skill: clamp(Number(offSkill.value), 0, 3),
         offline: true,
-    }))
+    }
+    if (setup.mode === 'coop' && !setup.bots) setup.bots = 5
+    launch(undefined, x => startServer(x, setup))
 })
 
 // ---------- the game's server (host and offline) ----------
@@ -453,12 +624,11 @@ function showNotice(text: string) {
     $('notice').hidden = !text
 }
 
-const setFfa = (x: Xash3D, mode: ModeId) => x.Cmd_ExecuteString(`cl_aimassist_ffa ${mode === 'ffa' ? 1 : 0}`)
-
 async function startServer(x: Xash3D, s: ServerSetup) {
     writeServerConfig(x, s)
     await prepareNav(x, s.map, s.bots)
-    setFfa(x, s.mode)
+    clientMode(x, s.mode)
+    current = {map: s.map, mode: MODES[s.mode].label}
     x.Cmd_ExecuteString(`maxplayers ${s.maxPlayers}`)
     x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
     x.Cmd_ExecuteString('sv_timeout 30') // drop a friend whose browser vanished after 30 s, not 65
@@ -468,10 +638,12 @@ async function startServer(x: Xash3D, s: ServerSetup) {
 
 async function changeMap(map: string, mode: string) {
     if (!hosting || !engine || !maps.includes(map) || !isMode(mode)) return
+    endOfMap()
     Object.assign(hosting.setup, {map, mode}) // the lobby info friends see reads this too
+    current = {map, mode: MODES[mode].label}
     writeServerConfig(engine, hosting.setup)
     await prepareNav(engine, map, hosting.setup.bots)
-    setFfa(engine, mode)
+    clientMode(engine, mode)
     engine.Cmd_ExecuteString(`changelevel ${map}`) // friends stay connected
     hosting.lobby.broadcastInfo()
 }
@@ -536,6 +708,58 @@ function pauseOffline(pause: boolean) {
     engine.Cmd_ExecuteString('pause')
 }
 
+// ---------- match stats ----------
+
+let current = {map: '', mode: ''} // what's being played (mode as its label)
+let myName = 'Player'
+const stats = createStats(() => myName)
+
+/** the map is over: summary on screen, then start counting again */
+function endOfMap() {
+    const s = stats.finish(current.map, current.mode)
+    stats.reset()
+    if (s.rows.length) showSummaryOverGame(s)
+}
+
+function showSummaryOverGame(s: Summary) {
+    showSummary(s, open => screenOpen(engine, 'summary', open))
+}
+
+/** the homepage card: the last match on this device and all-time totals */
+function showLastMatch() {
+    const s = lastMatch()
+    const t = loadTotals()
+    $('lastMatch').hidden = !s && !t.matches
+    if (s) {
+        $('lastTitle').textContent = `Last match · ${s.map} · ${s.mode}${s.mvp ? ` · MVP ${s.mvp}` : ''}`
+        $('lastTable').replaceChildren(summaryTable(s))
+    }
+    const kd = t.deaths ? (t.kills / t.deaths).toFixed(2) : String(t.kills)
+    $('totals').textContent = `On this device: ${t.matches} matches · ${t.kills} kills · ${t.deaths} deaths · ` +
+        `${t.headshots} headshots · K/D ${kd}`
+}
+showLastMatch()
+
+// ---------- controller vibration ----------
+// The client prints JOUCS_EV lines for our shots and the damage we take
+// (patches/cs16-client.patch); kills come from the kill lines.
+
+function shake(line: string) {
+    if (!line.includes('JOUCS_EV') && !line.includes(' killed') && !line.includes(' died')) return
+    if (!usingController()) return
+    const v = loadSettings().vibration / 100
+    if (!v) return
+    let m = /JOUCS_EV shot (\d+)/.exec(line)
+    if (m) return Number(m[1]) > 1 ? rumble(0.6 * v, 0.8 * v, 140) : rumble(0.2 * v, 0.5 * v, 60)
+    if ((m = /JOUCS_EV hit (\d+)/.exec(line))) {
+        const damage = Number(m[1])
+        return rumble(Math.min(1, damage / 50) * v, 0.6 * v, 120 + Math.min(300, damage * 4))
+    }
+    const k = parseKill(line)
+    if (k?.victim === myName) rumble(v, v, 450)
+    else if (k?.killer === myName) rumble(0.5 * v, 0.7 * v, 160)
+}
+
 // ---------- in game ----------
 
 function enterFullscreen() {
@@ -565,6 +789,9 @@ function keepLog(line: string) {
     }
     const talk = /JOUCS_TALK ([01])/.exec(line) // the talk button (settings.ts aliases)
     if (talk) voice?.talk(talk[1] === '1')
+    stats.onLine(line)
+    shake(line)
+    if (line.includes('JOUCS_GUNGAME_WIN')) setTimeout(endOfMap, 0) // the game restarts in 5 s
     menus?.onLine(line)
     settingsUi.onLine(line)
 }
@@ -609,6 +836,7 @@ const settingsUi = initSettings({
         kick,
     },
     onPause: pauseOffline,
+    showStats: () => showSummaryOverGame(stats.summary(current.map, current.mode)),
 })
 $('openSettings').addEventListener('click', () => settingsUi.openSettings())
 
@@ -623,8 +851,10 @@ function saveConfig(write: boolean) {
 function backToHome(error?: string) {
     try { if (error) sessionStorage.setItem('joucsError', error) } catch { /* storage blocked */ }
     saveConfig(!engineStopped)
+    if (playing) stats.finish(current.map, current.mode) // for the homepage card
     window.removeEventListener('beforeunload', confirmLeave)
-    location.reload()
+    // a host tells friends the lobby is closing before the page goes
+    Promise.resolve(hosting?.lobby.close()).finally(() => location.reload())
 }
 
 // a game that ended badly reloads the page; say why
@@ -643,9 +873,9 @@ function clamp(n: number, min: number, max: number) {
     return Math.min(max, Math.max(min, Math.round(n) || 0))
 }
 
-/** a name as a console argument: no quotes or separators */
+/** a name as a console argument: no quotes, separators or % (game messages format with it) */
 function cleanName(name: string, fallback: string, max = 24) {
-    return name.replace(/["\\;\u0000-\u001f]/g, '').trim().slice(0, max) || fallback
+    return name.replace(/["\\;%\u0000-\u001f]/g, '').trim().slice(0, max) || fallback
 }
 
 function playerName() {
@@ -655,7 +885,7 @@ function playerName() {
 }
 
 async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<void> | void) {
-    const name = playerName()
+    const name = myName = playerName()
     playing = true
     // needs a recent click: after a long download this fails quietly and the in-game button stays
     if (fullscreen.checked) enterFullscreen()
@@ -678,7 +908,7 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
     })
     if (net) x.net = net
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
-    const [extras] = await Promise.all([extrasPromise, x.init()])
+    const [clientExtras] = await Promise.all([extrasPromise, x.init()])
 
     await Promise.all(Object.entries(zip!.files).map(async ([filename, file]) => {
         if (file.dir) return
@@ -686,7 +916,11 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
         x.em!.FS.mkdirTree(path.split('/').slice(0, -1).join('/'))
         x.em!.FS.writeFile(path, await file.async('uint8array'))
     }))
-    x.em!.FS.writeFile('/rodir/cstrike/extras.pk3', new Uint8Array(extras))
+    x.em!.FS.writeFile('/rodir/cstrike/extras.pk3', new Uint8Array(clientExtras))
+    for (const e of extras) { // fan maps
+        x.em!.FS.mkdirTree('/rodir/' + e.path.split('/').slice(0, -1).join('/'))
+        x.em!.FS.writeFile('/rodir/' + e.path, new Uint8Array(await e.blob.arrayBuffer()))
+    }
     const savedConfig = store.get('engineConfig')
     if (savedConfig) x.em!.FS.writeFile(CONFIG_PATH, savedConfig)
     x.em!.FS.chdir('/rodir')

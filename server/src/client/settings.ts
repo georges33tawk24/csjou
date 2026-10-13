@@ -12,6 +12,7 @@ export type Settings = {
     deadzone: number // percent of stick travel
     aimAssist: number // percent, controller and touch only
     aimCurve: number // 1 = linear; higher = finer aim near the centre
+    vibration: number // percent
     crouchToggle: boolean
     mouseSens: number
     invertMouse: boolean
@@ -88,7 +89,7 @@ const PAD_BUTTONS = [
 const defaultPad = () => Object.fromEntries(ACTIONS.map(a => [a.id, a.key]))
 
 const DEFAULTS: Omit<Settings, 'pad'> = {
-    lookX: 200, lookY: 140, invertLook: false, deadzone: 12, aimAssist: 60, aimCurve: 2, crouchToggle: false,
+    lookX: 200, lookY: 140, invertLook: false, deadzone: 12, aimAssist: 60, aimCurve: 2, vibration: 70, crouchToggle: false,
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
@@ -182,6 +183,8 @@ export function applySettings(x: Xash3D, s: Settings) {
 
 type InputDevice = 'mouse' | 'pad' | 'touch'
 let inputDevice: InputDevice = 'mouse'
+
+export const usingController = () => inputDevice === 'pad'
 
 export function setInputDevice(x: Xash3D, device: InputDevice) {
     if (device === inputDevice) return
@@ -314,6 +317,7 @@ type Hooks = {
     openQuick: () => void
     host: () => HostPanel | undefined
     onPause: (paused: boolean) => void // offline games actually pause
+    showStats: () => void
 }
 
 export function initSettings(hooks: Hooks) {
@@ -453,6 +457,7 @@ export function initSettings(hooks: Hooks) {
             range('Aim assist (controller and touch only)', 'aimAssist', 0, 100, 5, v => v ? `${v}%` : 'Off'),
             range('Fine aim (response curve)', 'aimCurve', 1, 3, 0.1, v => v === 1 ? 'Linear' : v.toFixed(1)),
             range('Stick deadzone', 'deadzone', 0, 40, 1, v => `${v}%`),
+            range('Vibration', 'vibration', 0, 100, 10, v => v ? `${v}%` : 'Off'),
             toggle('Toggle crouch (press once instead of holding)', 'crouchToggle'),
             ...remapRows(),
         ]],
@@ -519,7 +524,10 @@ export function initSettings(hooks: Hooks) {
         const items: [string, () => void][] = [
             ['Resume', close],
         ]
-        if (inGame) items.push(['Quick menu: drop weapon, radio, chat', () => { close(false); hooks.openQuick() }])
+        if (inGame) items.push(
+            ['Quick menu: drop weapon, radio, chat', () => { close(false); hooks.openQuick() }],
+            ['Match stats', () => { close(false); hooks.showStats() }],
+        )
         items.push(['Settings', () => { fromPause = true; show('settings') }])
         if (inGame) {
             items.push(['Change team', () => { close(); hooks.engine()?.Cmd_ExecuteString('chooseteam') }])

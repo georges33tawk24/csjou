@@ -11,48 +11,185 @@ index e68a77a..7221d5b 100644
  
  unsigned int _generationIndex = 0; // used for iterating nav areas during generation process
  
+diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
+index b802a2e..f47b83e 100644
+--- a/regamedll/dlls/client.cpp
++++ b/regamedll/dlls/client.cpp
+@@ -615,6 +615,8 @@ void CheckStartMoney()
+ 
+ void EXT_FUNC ClientPutInServer(edict_t *pEntity)
+ {
++	JOUCS_GunGameReset(ENTINDEX(pEntity)); // a new player starts at the first weapon
++
+ 	entvars_t *pev = &pEntity->v;
+ 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
+ 
 diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
-index 2c6d9fb..7312a96 100644
+index 2c6d9fb..517eca5 100644
 --- a/regamedll/dlls/game.cpp
 +++ b/regamedll/dlls/game.cpp
-@@ -108,6 +108,7 @@ cvar_t scoreboard_showdefkit = { "mp_scoreboard_showdefkit", "1", FCVAR_SERVER,
+@@ -108,6 +108,8 @@ cvar_t scoreboard_showdefkit = { "mp_scoreboard_showdefkit", "1", FCVAR_SERVER,
  cvar_t game_version          = { "game_version", APP_VERSION, FCVAR_SERVER, 0.0f, nullptr };
  cvar_t maxmoney              = { "mp_maxmoney", "16000", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t round_infinite        = { "mp_round_infinite", "0", FCVAR_SERVER, 0.0f, nullptr };
 +cvar_t kill_reward           = { "mp_kill_reward", "300", FCVAR_SERVER, 0.0f, nullptr }; // JOUCS: money for killing an enemy
++cvar_t gungame               = { "mp_gungame", "0", FCVAR_SERVER, 0.0f, nullptr }; // JOUCS: Gun Game mode
  cvar_t hegrenade_penetration = { "mp_hegrenade_penetration", "0", 0, 0.0f, nullptr };
  cvar_t nadedrops             = { "mp_nadedrops", "0", 0, 0.0f, nullptr };
  cvar_t weapondrop            = { "mp_weapondrop", "1", 0, 1.0f, nullptr };
-@@ -388,6 +389,7 @@ void EXT_FUNC GameDLLInit()
+@@ -388,6 +390,8 @@ void EXT_FUNC GameDLLInit()
  	CVAR_REGISTER(&game_version);
  	CVAR_REGISTER(&maxmoney);
  	CVAR_REGISTER(&round_infinite);
 +	CVAR_REGISTER(&kill_reward);
++	CVAR_REGISTER(&gungame);
  	CVAR_REGISTER(&hegrenade_penetration);
  	CVAR_REGISTER(&nadedrops);
  	CVAR_REGISTER(&weapondrop);
 diff --git a/regamedll/dlls/game.h b/regamedll/dlls/game.h
-index ecf1001..ad581a1 100644
+index ecf1001..fd9626d 100644
 --- a/regamedll/dlls/game.h
 +++ b/regamedll/dlls/game.h
-@@ -137,6 +137,7 @@ extern cvar_t sk_scientist_heal3;
+@@ -137,6 +137,8 @@ extern cvar_t sk_scientist_heal3;
  
  extern cvar_t maxmoney;
  extern cvar_t round_infinite;
 +extern cvar_t kill_reward;
++extern cvar_t gungame;
  extern cvar_t hegrenade_penetration;
  extern cvar_t nadedrops;
  extern cvar_t weapondrop;
+diff --git a/regamedll/dlls/gamerules.h b/regamedll/dlls/gamerules.h
+index 220e095..a444fe5 100644
+--- a/regamedll/dlls/gamerules.h
++++ b/regamedll/dlls/gamerules.h
+@@ -1010,3 +1010,8 @@ void DestroyMapCycle(mapcycle_t *cycle);
+ int ReloadMapCycleFile(char *filename, mapcycle_t *cycle);
+ int CountPlayers();
+ int GetMapCount();
++
++// JOUCS Gun Game (multiplay_gamerules.cpp)
++void JOUCS_GunGameGive(CBasePlayer *pPlayer);
++void JOUCS_GunGameKill(CBasePlayer *pKiller);
++void JOUCS_GunGameReset(int index);
 diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
-index 2b91a50..e0a4b95 100644
+index 2b91a50..c39e8bb 100644
 --- a/regamedll/dlls/multiplay_gamerules.cpp
 +++ b/regamedll/dlls/multiplay_gamerules.cpp
-@@ -4049,7 +4049,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
+@@ -363,8 +363,77 @@ void CHalfLifeMultiplay::ReadMultiplayCvars()
+ 
+ }
+ 
++// JOUCS Gun Game (mp_gungame 1): every kill moves the killer on to the next
++// weapon; whoever gets a kill with the last one, the knife, wins and the game
++// restarts. Levels are kept per player slot.
++static const char *const g_GunGameWeapons[][2] = {
++	{"weapon_glock18", "Glock"}, {"weapon_usp", "USP"}, {"weapon_deagle", "Desert Eagle"}, {"weapon_elite", "Dual Elites"},
++	{"weapon_m3", "M3 shotgun"}, {"weapon_xm1014", "XM1014"}, {"weapon_mac10", "MAC-10"}, {"weapon_mp5navy", "MP5"},
++	{"weapon_p90", "P90"}, {"weapon_galil", "Galil"}, {"weapon_famas", "FAMAS"}, {"weapon_ak47", "AK-47"},
++	{"weapon_m4a1", "M4A1"}, {"weapon_aug", "AUG"}, {"weapon_scout", "Scout"}, {"weapon_awp", "AWP"},
++	{"weapon_m249", "M249"}, {"weapon_hegrenade", "HE grenades"}, {"weapon_knife", "Knife"},
++};
++static const int GUNGAME_LEVELS = sizeof(g_GunGameWeapons) / sizeof(g_GunGameWeapons[0]);
++static int g_GunGameLevel[MAX_CLIENTS + 1];
++
++void JOUCS_GunGameReset(int index)
++{
++	if (index > 0 && index <= MAX_CLIENTS)
++		g_GunGameLevel[index] = 0;
++}
++
++void JOUCS_GunGameGive(CBasePlayer *pPlayer)
++{
++	const int index = pPlayer->entindex();
++	if (index <= 0 || index > MAX_CLIENTS)
++		return;
++
++	const int level = g_GunGameLevel[index];
++	const char *weapon = g_GunGameWeapons[level][0];
++
++	pPlayer->RemoveAllItems(FALSE);
++	pPlayer->GiveNamedItemEx("weapon_knife");
++	if (level < GUNGAME_LEVELS - 1)
++	{
++		CBasePlayerItem *pItem = static_cast<CBasePlayerItem *>(pPlayer->GiveNamedItemEx(weapon));
++		if (pItem && pItem->pszAmmo1())
++			pPlayer->GiveAmmo(pItem->iMaxAmmo1(), pItem->pszAmmo1(), pItem->iMaxAmmo1());
++	}
++	pPlayer->SelectItem(weapon);
++}
++
++void JOUCS_GunGameKill(CBasePlayer *pKiller)
++{
++	const int index = pKiller->entindex();
++	if (index <= 0 || index > MAX_CLIENTS)
++		return;
++
++	char msg[128];
++	if (++g_GunGameLevel[index] >= GUNGAME_LEVELS)
++	{
++		Q_snprintf(msg, sizeof(msg), "%s wins Gun Game!", STRING(pKiller->pev->netname));
++		UTIL_ClientPrintAll(HUD_PRINTCENTER, msg);
++		Q_snprintf(msg, sizeof(msg), "JOUCS_GUNGAME_WIN %s\n", STRING(pKiller->pev->netname));
++		UTIL_ClientPrintAll(HUD_PRINTCONSOLE, msg);
++		Q_memset(g_GunGameLevel, 0, sizeof(g_GunGameLevel));
++		CVAR_SET_FLOAT("sv_restart", 5);
++		return;
++	}
++
++	const int level = g_GunGameLevel[index];
++	Q_snprintf(msg, sizeof(msg), "Level %d/%d: %s", level + 1, GUNGAME_LEVELS, g_GunGameWeapons[level][1]);
++	ClientPrint(pKiller->pev, HUD_PRINTCENTER, msg);
++	Q_snprintf(msg, sizeof(msg), "JOUCS_GUNGAME %d %s\n", level + 1, STRING(pKiller->pev->netname));
++	UTIL_ClientPrintAll(HUD_PRINTCONSOLE, msg);
++
++	if (pKiller->IsAlive())
++		JOUCS_GunGameGive(pKiller);
++}
++
+ CHalfLifeMultiplay::CHalfLifeMultiplay()
+ {
++	Q_memset(g_GunGameLevel, 0, sizeof(g_GunGameLevel)); // a new map starts everyone at the first weapon
++
+ 	m_bFreezePeriod = TRUE;
+ 
+ 	m_VoiceGameMgr.Init(&g_GameMgrHelper, gpGlobals->maxClients);
+@@ -4049,7 +4118,10 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
  				UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Assassinated_The_VIP\"\n", STRING(killer->pev->netname), GETPLAYERUSERID(killer->edict()), GETPLAYERAUTHID(killer->edict()));
  			}
  			else
 -				killer->AddAccount(REWARD_KILLED_ENEMY, RT_ENEMY_KILLED);
 +				killer->AddAccount(int(kill_reward.value), RT_ENEMY_KILLED);
++
++			if (gungame.value > 0)
++				JOUCS_GunGameKill(killer);
  
  			if (!(killer->m_flDisplayHistory & DHF_ENEMY_KILLED))
  			{
+diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
+index 1d04cc9..5c43eac 100644
+--- a/regamedll/dlls/player.cpp
++++ b/regamedll/dlls/player.cpp
+@@ -1670,6 +1670,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(GiveDefaultItems)()
+ {
+ 	RemoveAllItems(FALSE);
+ 
++	if (gungame.value > 0)
++	{
++		JOUCS_GunGameGive(this);
++		return;
++	}
++
+ // NOTE: It is already does reset inside RemoveAllItems
+ #ifndef REGAMEDLL_FIXES
+ 	m_bHasPrimary = false;
+@@ -8319,6 +8325,9 @@ LINK_HOOK_CLASS_CHAIN(CBaseEntity *, CBasePlayer, DropPlayerItem, (const char *p
+ // DropPlayerItem - drop the named item, or if no name, the active item.
+ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszItemName)
+ {
++	if (gungame.value > 0)
++		return nullptr; // JOUCS Gun Game: you keep the weapon you earned
++
+ 	if (!Q_strlen(pszItemName))
+ 	{
+ 		// if this string has no length, the client didn't type a name!

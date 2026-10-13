@@ -174,6 +174,36 @@
         .file-pick { position: relative; align-self: flex-start; }
         .file-pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
         .files[data-state=ready] .file-pick { font-size: 12px; padding: 5px 10px; color: var(--amber-dim); }
+        .file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+        .extras:has(#extrasText:empty) { display: none; }
+        .link { padding: 0; border: 0; background: none; color: var(--amber); font: inherit; text-decoration: underline; cursor: pointer; }
+
+        .recent h3, .last-match h3 { margin: 4px 0 8px; font: 14px var(--title); letter-spacing: 0.08em; text-transform: uppercase; }
+        #recentList { display: flex; flex-direction: column; gap: 6px; }
+        .recent-row {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 2px 10px;
+            align-items: center;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            background: var(--field);
+            color: var(--amber);
+            font: 14px var(--font);
+            text-align: left;
+            cursor: pointer;
+        }
+        .recent-row:hover { background: var(--select); }
+        .recent-row.offline { opacity: 0.6; }
+        .recent-info { grid-column: 2; font-size: 12px; color: var(--amber-dim); }
+
+        table.stats { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+        table.stats th { text-align: right; font-weight: 400; color: var(--amber-dim); font-size: 12px; text-transform: uppercase; padding: 4px 6px; }
+        table.stats td { text-align: right; padding: 5px 6px; border-top: 1px solid rgba(188, 112, 0, 0.25); }
+        table.stats th:first-child, table.stats td:first-child { text-align: left; }
+        table.stats tr.me td { color: #fff2c4; background: var(--amber-faint); }
+        .summary { z-index: 6; }
+        .summary .menu-panel { width: min(560px, 100%); }
 
         .bar { height: 3px; background: var(--amber-faint); overflow: hidden; }
         .bar > i { display: block; height: 100%; width: 0; background: var(--amber); transition: width 0.2s; }
@@ -435,9 +465,15 @@
             <p id="filesText">Checking for game files…</p>
         </div>
         <div class="bar"><i id="dataBar"></i></div>
-        <label class="secondary file-pick">Load valve.zip from this device
-            <input id="filesInput" type="file" accept=".zip,application/zip">
-        </label>
+        <div class="file-actions">
+            <label class="secondary file-pick">Load valve.zip from this device
+                <input id="filesInput" type="file" accept=".zip,application/zip">
+            </label>
+            <label class="secondary file-pick">Add maps (.bsp, .wad or .zip)
+                <input id="mapsInput" type="file" multiple accept=".bsp,.wad,.zip">
+            </label>
+        </div>
+        <p class="msg extras"><span id="extrasText"></span> <button id="clearExtras" class="link" hidden>Remove extra maps</button></p>
     </section>
 
     <section class="box">
@@ -469,6 +505,10 @@
             <p id="joinMsg" class="msg err" role="alert"></p>
             <button id="joinBtn" class="primary">Join lobby</button>
             <p class="msg">Opening an invite link fills in the code for you.</p>
+            <div id="recent" class="recent" hidden>
+                <h3>Recent lobbies</h3>
+                <div id="recentList"></div>
+            </div>
         </section>
 
         <section id="host" class="panel" role="tabpanel" aria-labelledby="tab-host" hidden>
@@ -524,6 +564,12 @@
         </section>
     </section>
 
+    <section id="lastMatch" class="box last-match" hidden>
+        <h3 id="lastTitle"></h3>
+        <div id="lastTable"></div>
+        <p id="totals" class="msg"></p>
+    </section>
+
     <footer>
         <div class="toggles">
             <label><input type="checkbox" id="fullscreen"> Start in fullscreen</label>
@@ -535,6 +581,7 @@
 </main>
 
 <div id="settings" class="menu settings" hidden role="dialog" aria-modal="true" aria-label="Settings"></div>
+<div id="summary" class="menu summary" hidden role="dialog" aria-modal="true" aria-label="Match summary"></div>
 
 <div id="game">
     <div id="logo">JOUCS</div>

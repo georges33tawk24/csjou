@@ -76,3 +76,12 @@ const rawGetGamepads = navigator.getGamepads?.bind(navigator)
 if (rawGetGamepads) {
     navigator.getGamepads = () => rawGetGamepads().map(p => p && shaped(p)) as ReturnType<Navigator['getGamepads']>
 }
+
+/** shake the controller: strong = big motor, weak = small motor (0..1), for ms */
+export function rumble(strong: number, weak: number, ms: number) {
+    for (const p of rawGetGamepads?.() ?? []) {
+        const motor = (p as Gamepad & { vibrationActuator?: GamepadHapticActuator & { playEffect?: Function } })?.vibrationActuator
+        motor?.playEffect?.('dual-rumble', {startDelay: 0, duration: ms, strongMagnitude: Math.min(1, strong), weakMagnitude: Math.min(1, weak)})
+            ?.catch?.(() => undefined)
+    }
+}

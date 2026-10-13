@@ -1,3 +1,33 @@
+diff --git a/cl_dll/events/ev_cs16.cpp b/cl_dll/events/ev_cs16.cpp
+index 517606c..98e5e2f 100644
+--- a/cl_dll/events/ev_cs16.cpp
++++ b/cl_dll/events/ev_cs16.cpp
+@@ -582,6 +582,10 @@ void EV_HLDM_FireBullets(int idx,
+ 
+ 	EV_DescribeBulletTypeParameters( iBulletType, iPenetrationPower, flPenetrationDistance );
+ 
++	// JOUCS: the page shakes the controller (see main.ts)
++	if( EV_IsLocal( idx ))
++		gEngfuncs.Con_Printf( "JOUCS_EV shot %d\n", cShots );
++
+ 	for ( iShot = 1; iShot <= cShots; iShot++ )
+ 	{
+ 		Vector vecShotSrc = vecSrc;
+diff --git a/cl_dll/health.cpp b/cl_dll/health.cpp
+index 4abf6f1..9320962 100644
+--- a/cl_dll/health.cpp
++++ b/cl_dll/health.cpp
+@@ -157,6 +157,10 @@ int CHudHealth:: MsgFunc_Damage(const char *pszName,  int iSize, void *pbuf )
+ 	int damageTaken = reader.ReadByte();	// health
+ 	long bitsDamage = reader.ReadLong(); // damage bits
+ 
++	// JOUCS: the page shakes the controller (see main.ts)
++	if( damageTaken > 0 || armor > 0 )
++		gEngfuncs.Con_Printf( "JOUCS_EV hit %d\n", damageTaken + armor );
++
+ 	vec3_t vecFrom;
+ 
+ 	for ( int i = 0 ; i < 3 ; i++)
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
 index 036da3f..1d72bb1 100644
 --- a/cl_dll/input/input_xash3d.cpp

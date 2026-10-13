@@ -2,6 +2,7 @@ import type JSZip from 'jszip'
 import type {Xash3D} from 'xash3d-fwgs'
 import {BTN, watchPad} from './pad'
 import {screenOpen} from './settings'
+import {summaryOpen} from './stats'
 
 // JOUCS team / character / buy screens and the quick menu, drawn over the game.
 //
@@ -232,6 +233,7 @@ export function initMenus(x: Xash3D, zip: JSZip) {
     const categoryTab = {buy: 0, quick: 0}
     let selected = 0
     let cards: Card[] = []
+    let coop = false // friends vs bots: humans are always Counter-Terrorists
 
     for (const [file, menu] of Object.entries(menuScripts())) {
         x.em!.FS.mkdirTree('/rodir/cstrike/touch')
@@ -257,7 +259,8 @@ export function initMenus(x: Xash3D, zip: JSZip) {
                 : cats[t].name === 'Chat' ? 'A send · Y type a message · B close · LB/RB category'
                 : 'A select · B close · LB/RB category · keys 1–9'
         } else {
-            cards = kind === 'team' ? TEAM_CARDS : CLASS_CARDS[kind === 'class_t' ? 't' : 'ct']
+            cards = kind !== 'team' ? CLASS_CARDS[kind === 'class_t' ? 't' : 'ct']
+                : coop ? TEAM_CARDS.filter(c => c.cmd === 'jointeam 2' || c.cmd === 'jointeam 6') : TEAM_CARDS
             title.textContent = kind === 'team' ? 'Choose your team' : 'Choose your character'
             tabs.replaceChildren()
             hint.textContent = 'A select · D-pad move · keys 1–9'
@@ -409,6 +412,7 @@ export function initMenus(x: Xash3D, zip: JSZip) {
 
     let watching = false
     function onPad(b: number) {
+        if (summaryOpen()) return // the match summary is on top
         if (document.activeElement === chatInput && b !== BTN.B) return
         if (b === BTN.A) activate(selected)
         else if (b === BTN.B || b === BTN.START) back()
@@ -426,6 +430,7 @@ export function initMenus(x: Xash3D, zip: JSZip) {
     return {
         isOpen: () => !!kind,
         openQuick: () => open('quick'),
+        setCoop(on: boolean) { coop = on },
         /** feed every engine console line here */
         onLine(line: string) {
             const m = /JOUCS_MENU (team|class_t|class_ct|buy|quick)/.exec(line)

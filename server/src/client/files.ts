@@ -56,3 +56,70 @@ export async function savedNav(map: string): Promise<ArrayBuffer | undefined> {
 export async function saveNav(map: string, data: Uint8Array) {
     await (await cache())?.put(`nav/${map}.nav`, new Response(data as BlobPart)).catch(() => undefined)
 }
+
+// ---------- extra maps ----------
+// Fan maps (aim_map, fy_snow, ...) loaded from the player's device: .bsp and
+// .wad files, or a .zip of a map pack. Kept like the game files; a lobby host
+// sends theirs to friends who don't have them.
+
+export type Extra = { path: string; blob: Blob }
+
+const EXTRA_BASE = () => new URL('__joucs_extra/', location.href).href
+const EXTRA_RE = /^cstrike\/(maps\/[a-z0-9_.-]+\.(bsp|txt|res)|[a-z0-9_.-]+\.wad|(sound|models|sprites|gfx|overviews)\/[a-z0-9_./-]+\.(wav|mdl|spr|tga|bmp|txt))$/
+const MAX_EXTRAS = 400e6
+
+/** where a file from a map download belongs in the game folder, or nothing */
+export function extraPath(name: string): string | undefined {
+    let p = name.replace(/\\/g, '/').toLowerCase().replace(/^\/+/, '')
+    const i = p.indexOf('cstrike/')
+    if (i >= 0) p = p.slice(i)
+    else if (/^(maps|sound|models|sprites|gfx|overviews)\//.test(p)) p = 'cstrike/' + p
+    else if (p.endsWith('.bsp')) p = 'cstrike/maps/' + p.split('/').pop()
+    else if (p.endsWith('.wad')) p = 'cstrike/' + p.split('/').pop()
+    return !p.includes('..') && EXTRA_RE.test(p) ? p : undefined
+}
+
+export async function savedExtras(): Promise<Extra[]> {
+    const c = await cache()
+    if (!c) return []
+    const base = EXTRA_BASE()
+    const keys = (await c.keys()).filter(r => r.url.startsWith(base))
+    return Promise.all(keys.map(async r => ({path: decodeURIComponent(r.url.slice(base.length)), blob: await (await c.match(r))!.blob()})))
+}
+
+export async function saveExtra(e: Extra) {
+    await (await cache())?.put(EXTRA_BASE() + encodeURIComponent(e.path), new Response(e.blob)).catch(() => undefined)
+}
+
+export async function clearExtras() {
+    const c = await cache()
+    if (!c) return
+    const base = EXTRA_BASE()
+    for (const r of await c.keys()) if (r.url.startsWith(base)) await c.delete(r)
+}
+
+/**
+ * Files picked by the player -> extra files to keep. Paths the base game already
+ * has are skipped (a lobby must play the same de_dust2 for everyone).
+ */
+export async function readExtras(files: File[], baseHas: (path: string) => boolean): Promise<Extra[]> {
+    const out: Extra[] = []
+    const add = (name: string, blob: Blob) => {
+        const path = extraPath(name)
+        if (path && !baseHas(path) && !out.some(e => e.path === path)) out.push({path, blob})
+    }
+    for (const f of files) {
+        if (f.name.toLowerCase().endsWith('.zip')) {
+            const z = await loadAsync(f)
+            for (const [name, entry] of Object.entries(z.files)) {
+                if (!entry.dir && extraPath(name)) add(name, await entry.async('blob'))
+            }
+        } else add(f.name, f)
+    }
+    if (out.reduce((n, e) => n + e.blob.size, 0) > MAX_EXTRAS) throw new Error('That is more than 400 MB of maps.')
+    return out
+}
+
+export const extraMaps = (extras: Extra[]) => extras
+    .map(e => /^cstrike\/maps\/([a-z0-9_.-]+)\.bsp$/.exec(e.path)?.[1])
+    .filter((m): m is string => !!m)

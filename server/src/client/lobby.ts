@@ -1,5 +1,6 @@
 import Peer, {type DataConnection} from 'peerjs'
 import {ErrNoLocation, Net, type Packet} from 'xash3d-fwgs'
+import type {Extra} from './files'
 import type {VoicePlayer} from './voice'
 
 // Lobbies run in the host's browser: their engine is a listen server and each
@@ -8,9 +9,9 @@ import type {VoicePlayer} from './voice'
 // connections); after that nothing goes through any server of ours.
 //
 // Per friend there is one WebRTC connection with three channels:
-//   PeerJS's JSON channel    lobby messages (info, join, welcome, reject)
+//   PeerJS's JSON channel    lobby messages (info, join, welcome, reject, ...)
 //   "game"                   engine packets: unordered, no retransmits, like UDP
-//   "files"                  the game files, for friends who don't have them yet
+//   "files"                  game files and extra maps the friend doesn't have yet
 
 export type LobbyInfo = {
     name: string
@@ -21,11 +22,14 @@ export type LobbyInfo = {
     private: boolean
 }
 
+type FileItem = { path: string; size: number } // path '' = the game files (valve.zip)
+
 type Msg =
     | ({ t: 'info' } & Partial<LobbyInfo>)
-    | { t: 'join'; name: string; password: string; needFiles: boolean }
-    | { t: 'welcome'; fileSize: number }
+    | { t: 'join'; name: string; password: string; needFiles: boolean; have: string[]; resume?: string }
+    | { t: 'welcome'; files: FileItem[]; token: string }
     | { t: 'reject'; reason: string }
+    | { t: 'bye' } // the host closed the lobby
     | { t: 'voice'; on: boolean } // a friend turned voice chat on
     | { t: 'roster'; players: VoicePlayer[] } // who has voice chat on
 
@@ -83,6 +87,7 @@ const connReady = (peer: Peer, conn: DataConnection) => within(new Promise<void>
 // client socket would swallow friends' packets.
 const SERVER_PORT = 27015 // engine default hostport
 const GUEST_PORT = 27005
+const RESUME_MS = 30_000 // a friend who drops out keeps their place this long
 
 class HostNet extends Net {
     recvfrom(fd: number, bufPtr: number, bufLen: number, flags: number, sockaddrPtr: number, socklenPtr: number) {
@@ -94,17 +99,25 @@ class HostNet extends Net {
     }
 }
 
-type Guest = { conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']; joined: boolean; name: string; voice: boolean }
+type Guest = {
+    conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']
+    joined: boolean; name: string; voice: boolean; token: string; kicked?: boolean
+}
 
 export type HostOptions = {
     code: string
     password: string // '' = public
     info: () => Omit<LobbyInfo, 'players' | 'private'> & { bots: number }
     gameFiles: () => Promise<Blob>
+    extras: () => Promise<Extra[]>
+    /** a friend dropped out and did not come back */
+    onLeft: (name: string) => void
 }
 
 export async function hostLobby(opts: HostOptions) {
     const guests = new Map<string, Guest>() // by fake ip
+    // friends whose connection dropped: token -> their address, kept for RESUME_MS
+    const departed = new Map<string, { ip: Packet['ip']; timer?: ReturnType<typeof setTimeout> }>()
     let nextGuest = 1
 
     const net = new HostNet({
@@ -115,7 +128,19 @@ export async function hostLobby(opts: HostOptions) {
         },
     }, {maxPackets: 1024})
 
-    const joinedCount = () => [...guests.values()].filter(g => g.joined).length
+    const joined = () => [...guests.entries()].filter(([, g]) => g.joined)
+
+    /** a friend reconnects before we noticed their old connection drop: hand its place over */
+    function takeOver(token: string) {
+        const old = joined().find(([, g]) => g.token === token)
+        if (!old) return undefined
+        const [oldKey, g] = old
+        g.kicked = true // not "departed": it's coming straight back
+        guests.delete(oldKey)
+        g.conn.close()
+        return {ip: g.ip, timer: undefined}
+    }
+    const joinedCount = () => joined().length
     const info = (): LobbyInfo => {
         const {bots, ...rest} = opts.info()
         return {...rest, players: 1 + joinedCount() + bots, private: !!opts.password}
@@ -128,13 +153,14 @@ export async function hostLobby(opts: HostOptions) {
 
     peer.on('connection', conn => {
         const n = nextGuest++
-        const ip: Packet['ip'] = [10, 7, (n >> 8) & 255, n & 255]
-        const key = ip.join('.')
+        // a reconnecting friend gets their old address back, so the game carries on
+        let ip: Packet['ip'] = [10, 7, (n >> 8) & 255, n & 255]
+        let key = ip.join('.')
         let guest: Guest | undefined
 
         conn.on('open', () => {
             const {game, files} = channels(conn)
-            guest = {conn, game, files, ip, joined: false, name: '', voice: false}
+            guest = {conn, game, files, ip, joined: false, name: '', voice: false, token: crypto.randomUUID()}
             guests.set(key, guest)
             game.onmessage = e => {
                 if (guest?.joined) net.incoming.enqueue({ip, port: GUEST_PORT, data: new Int8Array(e.data as ArrayBuffer)})
@@ -149,29 +175,42 @@ export async function hostLobby(opts: HostOptions) {
                 sendRoster()
             }
             if (msg.t !== 'join' || guest.joined) return
+            const back = msg.resume ? departed.get(msg.resume) ?? takeOver(msg.resume) : undefined
             const i = info()
             const reason = opts.password && msg.password !== opts.password ? 'Wrong lobby password.'
-                : i.players >= i.maxPlayers ? 'This lobby is full.'
+                : !back && i.players >= i.maxPlayers ? 'This lobby is full.'
                 : ''
             if (reason) {
                 conn.send({t: 'reject', reason} satisfies Msg)
                 return
             }
+            if (back) {
+                clearTimeout(back.timer)
+                departed.delete(msg.resume!)
+                guests.delete(key)
+                guest.ip = ip = back.ip
+                key = ip.join('.')
+                guest.token = msg.resume!
+                guests.set(key, guest)
+            }
             guest.joined = true
             guest.name = String(msg.name).slice(0, 32)
-            const data = msg.needFiles ? await opts.gameFiles() : undefined
-            conn.send({t: 'welcome', fileSize: data?.size ?? 0} satisfies Msg)
-            if (data) sendFile(guest.files, data).catch(() => conn.close())
+            const base = msg.needFiles ? await opts.gameFiles() : undefined
+            const extras = (await opts.extras()).filter(e => !msg.have?.includes(e.path))
+            const items = [...base ? [{path: '', blob: base}] : [], ...extras]
+            conn.send({t: 'welcome', files: items.map(e => ({path: e.path, size: e.blob.size})), token: guest.token} satisfies Msg)
+            ;(async () => { for (const e of items) await sendFile(guest!.files, e.blob) })().catch(() => conn.close())
         })
         conn.on('close', () => {
             if (guests.get(key)?.conn !== conn) return
             guests.delete(key)
             sendRoster()
+            if (!guest?.joined || guest.kicked) return
+            const {token, name} = guest
+            departed.set(token, {ip, timer: setTimeout(() => { departed.delete(token); opts.onLeft(name) }, RESUME_MS)})
         })
         conn.on('error', () => conn.close())
     })
-
-    const joined = () => [...guests.entries()].filter(([, g]) => g.joined)
 
     // voice chat: who has it on, for everyone (the host included)
     let hostVoice: VoicePlayer | undefined
@@ -185,12 +224,17 @@ export async function hostLobby(opts: HostOptions) {
         for (const [, g] of joined()) g.conn.send({t: 'roster', players} satisfies Msg)
         onRoster(players)
     }
-    const close = () => peer.destroy()
-    window.addEventListener('pagehide', close)
+
+    window.addEventListener('pagehide', () => peer.destroy())
     return {
         net,
         peer,
-        close,
+        /** tell everyone the lobby is closing, then close it */
+        async close() {
+            for (const [, g] of joined()) g.conn.send({t: 'bye'} satisfies Msg)
+            await new Promise(r => setTimeout(r, 300))
+            peer.destroy()
+        },
         guests: joinedCount,
         players: () => joined().map(([key, g]) => ({key, name: g.name})),
         /** tell friends' lobby screens about a new map or mode */
@@ -206,8 +250,8 @@ export async function hostLobby(opts: HostOptions) {
         kick(key: string) {
             const g = guests.get(key)
             if (!g) return
+            g.kicked = true
             g.conn.send({t: 'reject', reason: 'The host removed you from the lobby.'} satisfies Msg)
-            guests.delete(key)
             setTimeout(() => g.conn.close(), 500)
         },
     }
@@ -232,7 +276,33 @@ async function sendFile(ch: RTCDataChannel, blob: Blob) {
 
 // ---------- guest ----------
 
-export type JoinResult = { net: Net; files?: Blob }
+/** the engine's network for a friend; the game channel changes when reconnecting */
+export function guestNet() {
+    let game: RTCDataChannel | undefined
+    const net = new Net({
+        sendto(p: Packet) {
+            if (game?.readyState === 'open') game.send(p.data.slice())
+        },
+    }, {maxPackets: 1024})
+    return {
+        net,
+        attach(ch: RTCDataChannel) {
+            game = ch
+            // the engine connects to 127.0.0.1:8080; everything from the host comes "from" there
+            ch.onmessage = e => net.incoming.enqueue({ip: [127, 0, 0, 1], port: 8080, data: new Int8Array(e.data as ArrayBuffer)})
+        },
+    }
+}
+
+export type JoinOptions = {
+    name: string
+    password: string
+    needFiles: boolean
+    have: string[] // extra map files already here
+    resume?: string // token from an earlier join, to get our place back
+    progress?: (got: number, total: number) => void
+}
+export type JoinResult = { game: RTCDataChannel; files?: Blob; extras: Extra[]; token: string }
 
 export async function findLobby(code: string) {
     const peer = new Peer()
@@ -253,21 +323,26 @@ export async function findLobby(code: string) {
         conn.once('close', () => reject(new Error('The host closed the lobby.')))
     })
 
-    // a host that just vanishes (closed tab, lost network) may never close the
-    // channel cleanly, so watch the connection itself as well
+    // The host may vanish without closing anything (closed tab, lost network),
+    // so watch the connection itself too. A reason means it's final (removed,
+    // lobby closed); without one, reconnecting may work.
     let closedHandler = (_reason?: string) => undefined as void
     let infoHandler = (_info: LobbyInfo) => undefined as void
     let rosterHandler = (_players: VoicePlayer[]) => undefined as void
     let joined = false
+    let lost: ReturnType<typeof setTimeout> | undefined
     conn.on('close', () => closedHandler())
     game.addEventListener('close', () => closedHandler())
     conn.peerConnection.addEventListener('connectionstatechange', () => {
-        if (['failed', 'closed'].includes(conn.peerConnection.connectionState)) closedHandler()
+        const state = conn.peerConnection.connectionState
+        clearTimeout(lost)
+        if (state === 'failed' || state === 'closed') closedHandler()
+        if (state === 'disconnected') lost = setTimeout(() => closedHandler(), 4000)
     })
-    // while playing: the host removed us, or changed the map or mode
     listeners.add(m => {
         if (!joined) return
         if (m.t === 'reject') closedHandler(m.reason)
+        if (m.t === 'bye') closedHandler('The host closed the lobby.')
         if (m.t === 'info') infoHandler(m as unknown as LobbyInfo)
         if (m.t === 'roster') rosterHandler(m.players)
     })
@@ -280,36 +355,47 @@ export async function findLobby(code: string) {
             return await reply as unknown as LobbyInfo
         },
 
-        async join(name: string, password: string, needFiles: boolean, progress: (got: number, total: number) => void): Promise<JoinResult> {
+        async join(o: JoinOptions): Promise<JoinResult> {
             const reply = next('welcome', 'reject')
-            conn.send({t: 'join', name, password, needFiles} satisfies Msg)
+            conn.send({t: 'join', name: o.name, password: o.password, needFiles: o.needFiles, have: o.have, resume: o.resume} satisfies Msg)
             const m = await reply
             if (m.t === 'reject') throw new Error(m.reason)
             joined = true
 
-            let blob: Blob | undefined
-            if (m.fileSize) {
-                blob = await new Promise<Blob>((resolve, reject) => {
-                    const parts: ArrayBuffer[] = []
-                    let got = 0
+            // the files arrive one after another on the files channel; messages never span two
+            const total = m.files.reduce((n, f) => n + f.size, 0)
+            const blobs: Blob[] = []
+            if (total) {
+                await new Promise<void>((resolve, reject) => {
+                    let item = 0, got = 0, all = 0
+                    let parts: ArrayBuffer[] = []
+                    const skipEmpty = () => { while (item < m.files.length && m.files[item].size === 0) { blobs.push(new Blob()); item++ } }
+                    skipEmpty()
                     files.onmessage = e => {
-                        parts.push(e.data as ArrayBuffer)
-                        got += (e.data as ArrayBuffer).byteLength
-                        progress(got, m.fileSize)
-                        if (got >= m.fileSize) resolve(new Blob(parts))
+                        const data = e.data as ArrayBuffer
+                        parts.push(data)
+                        got += data.byteLength
+                        all += data.byteLength
+                        o.progress?.(all, total)
+                        if (got < m.files[item].size) return
+                        blobs.push(new Blob(parts))
+                        parts = []
+                        got = 0
+                        item++
+                        skipEmpty()
+                        if (item >= m.files.length) resolve()
                     }
-                    conn.once('close', () => reject(new Error('The host closed the lobby before the game files arrived.')))
+                    conn.once('close', () => reject(new Error('The host closed the lobby before the files arrived.')))
                 })
-            }
+            } else m.files.forEach(() => blobs.push(new Blob()))
 
-            const net = new Net({
-                sendto(p: Packet) {
-                    if (game.readyState === 'open') game.send(p.data.slice())
-                },
-            }, {maxPackets: 1024})
-            // the engine connects to 127.0.0.1:8080; everything from the host comes "from" there
-            game.onmessage = e => net.incoming.enqueue({ip: [127, 0, 0, 1], port: 8080, data: new Int8Array(e.data as ArrayBuffer)})
-            return {net, files: blob}
+            const base = m.files.findIndex(f => f.path === '')
+            return {
+                game,
+                files: base >= 0 ? blobs[base] : undefined,
+                extras: m.files.flatMap((f, i) => f.path ? [{path: f.path, blob: blobs[i]}] : []),
+                token: m.token,
+            }
         },
 
         onClose(fn: (reason?: string) => void) { closedHandler = fn },
@@ -325,3 +411,29 @@ export async function findLobby(code: string) {
 }
 
 export type Lobby = Awaited<ReturnType<typeof findLobby>>
+
+/** which of these lobbies are open right now, and what they're playing */
+export async function probeLobbies(codes: string[]): Promise<Map<string, LobbyInfo | undefined>> {
+    const result = new Map<string, LobbyInfo | undefined>()
+    if (!codes.length) return result
+    const peer = new Peer()
+    try { await peerReady(peer) } catch { return result }
+    await Promise.all(codes.map(code => new Promise<void>(resolve => {
+        const conn = peer.connect(peerId(code), {serialization: 'json', reliable: true})
+        let settled = false
+        const done = (info?: LobbyInfo) => {
+            if (settled) return
+            settled = true
+            result.set(code, info)
+            clearTimeout(timer)
+            conn.close()
+            resolve()
+        }
+        const timer = setTimeout(() => done(), 8000)
+        conn.on('open', () => conn.send({t: 'info'} satisfies Msg))
+        conn.on('data', m => { if ((m as Msg).t === 'info') done(m as unknown as LobbyInfo) })
+        peer.on('error', e => { if (e.message?.includes(peerId(code))) done() })
+    })))
+    peer.destroy()
+    return result
+}

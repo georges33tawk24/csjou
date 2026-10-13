@@ -1,41 +1,39 @@
 # JOUCS
 
-Counter-Strike 1.6 in the browser, served from your own machine.
+Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
 
-- **Online**: friends open your link and join your server. The host picks the map and up to 12 bots from the homepage.
-- **Offline with bots**: the whole game, server included, runs in your browser. No port forwarding.
-- Bots need a navigation mesh per map. The browser builds one in ~30s and uploads it to the server,
-  which would otherwise take ~10 min under 32-bit emulation. Maps marked "play offline first" lack one.
+- **Host**: whoever creates a lobby runs the game server in their own browser and shares an invite
+  link or 6-character code. Pick the game mode (classic, team deathmatch, free-for-all, knife arena),
+  map, max players, bots and an optional password. The host can change map and mode from the pause menu.
+- **Join**: open the invite link. Friends connect straight to the host's browser (WebRTC through
+  PeerJS's free public service, which also relays traffic when a network blocks direct connections).
+  No router setup, no server to keep running.
+- **Offline**: the same game modes against bots, entirely in the browser.
+- Controller support for every action (remappable, plus a quick menu for drop, radio and chat), touch
+  controls on phones, crosshair editor, and the team, character and buy screens drawn from the game's art.
+
+## Game files
+
+The Counter-Strike files (`valve/` + `cstrike/`, about 250 MB) are Valve's, so JOUCS never publishes
+them. Each browser keeps its own copy (Cache Storage, per site), obtained once by either:
+
+- loading a `valve.zip` with `valve/` and `cstrike/` at the zip root, e.g. made from Valve's free
+  dedicated server: `steamcmd +force_install_dir ./cs16 +login anonymous +app_update 90 +quit`, or
+- joining a lobby: the host's browser sends its copy to friends who don't have one yet.
+
+Bot navigation meshes (built in ~30 s the first time bots play a map) are kept the same way.
+
+## Build
 
 Rebuilt from the MIT-licensed [webxash3d-fwgs](https://github.com/daShao999/WebXash3D-Fwgs-yohimik)
-`cs-web-server` after the original repo, npm packages and Docker images were deleted.
-`fetch-sources.sh` pins the exact engine, client and Go versions it used. Game logic is the official
-[ReGameDLL](https://github.com/rehlds/ReGameDLL_CS) release, which includes the bots.
-
-GitHub Actions builds the image and pushes it to `ghcr.io/<owner>/cs-web-server:latest`.
-
-## Run
-
-You need `valve.zip` with `valve/` and `cstrike/` at the zip root, e.g. from Valve's free dedicated server:
-`steamcmd +force_install_dir ./cs16 +login anonymous +app_update 90 +quit`.
+after the original repo, npm packages and Docker images were deleted. `fetch-sources.sh` pins the CS
+client and [ReGameDLL](https://github.com/rehlds/ReGameDLL_CS) (game logic and bots) versions it used;
+the engine comes from the `xash3d-fwgs` npm package.
 
 ```bash
-docker run -d --name joucs --restart unless-stopped --platform linux/386 \
-  -p 27016:27016 -e ADMIN_PASSWORD=<pick-one> \
-  -v "$PWD/valve.zip:/xashds/public/valve.zip:ro" \
-  -v joucs-maps:/xashds/cstrike/maps \
-  ghcr.io/<owner>/cs-web-server:latest
+./fetch-sources.sh
+docker build --target web --output type=local,dest=page .
 ```
 
-Open `http://localhost:27016`. Everything, game traffic included, runs over that one HTTP port
-(game packets use a WebSocket at `/game`), so friends can join through any HTTPS tunnel with no
-router setup: `cloudflared tunnel --url http://localhost:27016`.
-
-The build also publishes the page to GitHub Pages (`https://<owner>.github.io/<repo>/`). That
-address never changes, so browsers keep the 240 MB of game files after the first visit. The page
-finds the host through `link.json` on the `gh-pages` branch, which the host's start script updates
-whenever it opens or closes its tunnel. Players who have the files saved can also play offline with
-bots from that address while the host is away.
-
-On Apple Silicon with Colima, register 32-bit x86 emulation once per VM start:
-`docker run --privileged --rm tonistiigi/binfmt --install 386`.
+`page/` is the whole site. GitHub Actions builds it on every push to `main` and publishes it to the
+`gh-pages` branch.

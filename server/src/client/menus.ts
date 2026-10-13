@@ -1,8 +1,9 @@
 import type JSZip from 'jszip'
 import type {Xash3D} from 'xash3d-fwgs'
 import {BTN, watchPad} from './pad'
+import {screenOpen} from './settings'
 
-// JOUCS team / character / buy screens, drawn over the game.
+// JOUCS team / character / buy screens and the quick menu, drawn over the game.
 //
 // The CS client runs touch/<menu>.cfg whenever the server opens a VGUI menu
 // (team select, class select, buy). We replace those files with one-line
@@ -10,8 +11,9 @@ import {BTN, watchPad} from './pad'
 // shows up in the engine log. Loose files win over extras.pk3.
 
 type Team = 't' | 'ct'
-type Kind = 'team' | 'class_t' | 'class_ct' | 'buy'
+type Kind = 'team' | 'class_t' | 'class_ct' | 'buy' | 'quick'
 type Card = { label: string; cmd: string; img?: string; price?: number; team?: Team }
+type Category = { name: string; items: Card[] }
 
 const TEAM_CARDS: Card[] = [
     {label: 'Terrorists', img: 'terror', cmd: 'jointeam 1'},
@@ -38,7 +40,7 @@ const CLASS_CARDS: Record<Team, Card[]> = {
 }
 
 // commands and prices from ReGameDLL (weapontype.cpp / weapontype.h)
-const SHOP: { name: string; items: Card[] }[] = [
+const SHOP: Category[] = [
     {name: 'Pistols', items: [
         {label: 'Glock 18', img: 'glock18', cmd: 'glock', price: 400},
         {label: 'USP .45', img: 'usp45', cmd: 'usp', price: 500},
@@ -88,6 +90,55 @@ const SHOP: { name: string; items: Card[] }[] = [
         {label: 'Secondary ammo', cmd: 'secammo'},
     ]},
 ]
+
+// everything else a keyboard player has a key for; radio commands are ReGameDLL's
+const QUICK: Category[] = [
+    {name: 'Actions', items: [
+        {label: 'Drop weapon', cmd: 'drop'},
+        {label: 'Last used weapon', cmd: 'lastinv'},
+        {label: 'Grenades', cmd: 'slot4'},
+        {label: 'C4 bomb', cmd: 'slot5'},
+        {label: 'Knife', cmd: 'slot3'},
+        {label: 'Buy primary ammo', cmd: 'buyammo1'},
+        {label: 'Buy pistol ammo', cmd: 'buyammo2'},
+        {label: 'Rebuy last round', cmd: 'rebuy'},
+        {label: 'Auto-buy', cmd: 'autobuy'},
+        {label: 'Flashlight', cmd: 'impulse 100'},
+        {label: 'Night vision', cmd: 'nightvision'},
+        {label: 'Spray logo', cmd: 'impulse 201'},
+        {label: 'Change team', cmd: 'chooseteam'},
+    ]},
+    {name: 'Radio: orders', items: [
+        {label: 'Cover me', cmd: 'coverme'},
+        {label: 'You take the point', cmd: 'takepoint'},
+        {label: 'Hold this position', cmd: 'holdpos'},
+        {label: 'Regroup team', cmd: 'regroup'},
+        {label: 'Follow me', cmd: 'followme'},
+        {label: 'Taking fire, need assistance', cmd: 'takingfire'},
+        {label: 'Go go go!', cmd: 'go'},
+        {label: 'Team, fall back', cmd: 'fallback'},
+        {label: 'Stick together, team', cmd: 'sticktog'},
+        {label: 'Get in position', cmd: 'getinpos'},
+        {label: 'Storm the front', cmd: 'stormfront'},
+        {label: 'Report in, team', cmd: 'report'},
+    ]},
+    {name: 'Radio: replies', items: [
+        {label: 'Affirmative', cmd: 'roger'},
+        {label: 'Negative', cmd: 'negative'},
+        {label: 'Enemy spotted', cmd: 'enemyspot'},
+        {label: 'Need backup', cmd: 'needbackup'},
+        {label: 'Sector clear', cmd: 'sectorclear'},
+        {label: "I'm in position", cmd: 'inposition'},
+        {label: 'Reporting in', cmd: 'reportingin'},
+        {label: 'Get out of there!', cmd: 'getout'},
+        {label: 'Enemy down', cmd: 'enemydown'},
+    ]},
+    {name: 'Chat', items: ['gg', 'Nice shot!', 'Thanks!', 'Sorry!', 'Wait for me', 'Rush B!', 'Rush A!', 'Need help', 'lol']
+        .map(text => ({label: text, cmd: `say "${text}"`}))},
+]
+
+/** chat text as a console argument: no quotes, separators or line breaks */
+const chatText = (t: string) => t.replace(/["\\;\u0000-\u001f]/g, '').trim().slice(0, 120)
 
 /** touch/*.cfg names the CS client executes for each server menu */
 function menuScripts(): Record<string, string> {
@@ -145,6 +196,23 @@ function vguiImage(zip: JSZip, name: string): Promise<string> {
     return url
 }
 
+/** CS 1.6's menu background, put together from its 800x600 tiles */
+export async function menuBackground(zip: JSZip): Promise<string> {
+    const canvas = document.createElement('canvas')
+    canvas.width = 800
+    canvas.height = 600
+    const g = canvas.getContext('2d')!
+    let found = false
+    for (const [row, y] of [[1, 0], [2, 256], [3, 512]] as const) {
+        for (const [col, x] of [['a', 0], ['b', 256], ['c', 512], ['d', 768]] as const) {
+            const file = zip.file(`cstrike/resource/background/800_${row}_${col}_loading.tga`)
+            const img = file && decodeTga(await file.async('uint8array'))
+            if (img) { g.putImageData(img, x, y); found = true }
+        }
+    }
+    return found ? canvas.toDataURL('image/jpeg', 0.85) : ''
+}
+
 // ---------- the overlay ----------
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement
@@ -155,11 +223,13 @@ export function initMenus(x: Xash3D, zip: JSZip) {
     const tabs = $('menuTabs')
     const grid = $('menuGrid')
     const actions = $('menuActions')
+    const chat = $('menuChat') as HTMLFormElement
+    const chatInput = $('menuChatText') as HTMLInputElement
     const hint = $('menuHint')
 
     let kind: Kind | undefined
     let team: Team | undefined // learned from the character menu the server opens
-    let tab = 0
+    const categoryTab = {buy: 0, quick: 0}
     let selected = 0
     let cards: Card[] = []
 
@@ -168,18 +238,24 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         x.em!.FS.writeFile(`/rodir/cstrike/touch/${file}.cfg`, `echo JOUCS_MENU ${menu}\n`)
     }
 
+    const categories = (): Category[] | undefined => kind === 'buy' ? SHOP : kind === 'quick' ? QUICK : undefined
+
     function render() {
-        if (kind === 'buy') {
-            cards = SHOP[tab].items.filter(c => !team || !c.team || c.team === team)
-            title.textContent = 'Buy menu'
-            tabs.replaceChildren(...SHOP.map((cat, i) => {
+        const cats = categories()
+        if (cats && (kind === 'buy' || kind === 'quick')) {
+            const t = categoryTab[kind]
+            cards = cats[t].items.filter(c => !team || !c.team || c.team === team)
+            title.textContent = kind === 'buy' ? 'Buy menu' : 'Quick menu'
+            tabs.replaceChildren(...cats.map((cat, i) => {
                 const b = document.createElement('button')
                 b.textContent = cat.name
-                b.setAttribute('aria-selected', String(i === tab))
-                b.addEventListener('click', () => { tab = i; selected = 0; render() })
+                b.setAttribute('aria-selected', String(i === t))
+                b.addEventListener('click', () => setTab(i))
                 return b
             }))
-            hint.textContent = 'A buy · B close · LB/RB category · X auto-buy · Y rebuy · keys 1–9'
+            hint.textContent = kind === 'buy' ? 'A buy · B close · LB/RB category · X auto-buy · Y rebuy · keys 1–9'
+                : cats[t].name === 'Chat' ? 'A send · Y type a message · B close · LB/RB category'
+                : 'A select · B close · LB/RB category · keys 1–9'
         } else {
             cards = kind === 'team' ? TEAM_CARDS : CLASS_CARDS[kind === 'class_t' ? 't' : 'ct']
             title.textContent = kind === 'team' ? 'Choose your team' : 'Choose your character'
@@ -187,27 +263,29 @@ export function initMenus(x: Xash3D, zip: JSZip) {
             hint.textContent = 'A select · D-pad move · keys 1–9'
         }
         actions.hidden = kind !== 'buy'
+        chat.hidden = !(kind === 'quick' && QUICK[categoryTab.quick].name === 'Chat')
         root.dataset.kind = kind
-        selected = Math.min(selected, cards.length - 1)
+        selected = Math.max(0, Math.min(selected, cards.length - 1))
 
         grid.replaceChildren(...cards.map((card, i) => {
             const el = document.createElement('button')
             el.className = 'card'
             el.setAttribute('aria-selected', String(i === selected))
-            const pic = document.createElement('div')
-            pic.className = 'pic'
-            if (card.img) {
-                const img = document.createElement('img')
-                img.alt = ''
-                vguiImage(zip, card.img).then(src => { if (src) img.src = src })
-                pic.append(img)
-            } else {
-                pic.textContent = card.label === 'Spectate' ? '👁' : '?'
+            el.append(Object.assign(document.createElement('kbd'), {textContent: String(i + 1)}))
+            if (kind !== 'quick') {
+                const pic = document.createElement('div')
+                pic.className = 'pic'
+                if (card.img) {
+                    const img = document.createElement('img')
+                    img.alt = ''
+                    vguiImage(zip, card.img).then(src => { if (src) img.src = src })
+                    pic.append(img)
+                } else {
+                    pic.textContent = card.label === 'Spectate' ? '👁' : '?'
+                }
+                el.append(pic)
             }
-            const name = document.createElement('span')
-            name.className = 'name'
-            name.textContent = card.label
-            el.append(Object.assign(document.createElement('kbd'), {textContent: String(i + 1)}), pic, name)
+            el.append(Object.assign(document.createElement('span'), {className: 'name', textContent: card.label}))
             if (card.price) el.append(Object.assign(document.createElement('span'), {className: 'price', textContent: `$${card.price}`}))
             if (card.team && !team) el.append(Object.assign(document.createElement('span'), {className: 'team', textContent: card.team.toUpperCase()}))
             el.addEventListener('mouseenter', () => select(i))
@@ -226,7 +304,7 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         const card = cards[i]
         if (!card) return
         x.Cmd_ExecuteString(card.cmd)
-        if (kind !== 'buy') return close() // the server opens the next menu itself
+        if (kind !== 'buy') return close() // the server opens the next team/character menu itself
         const el = grid.children[i] as HTMLElement
         el.classList.remove('bought')
         void el.offsetWidth // restart the flash animation
@@ -241,15 +319,26 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         b.addEventListener('click', () => run(b.dataset.cmd!))
     }
 
+    chat.addEventListener('submit', e => {
+        e.preventDefault()
+        const text = chatText(chatInput.value)
+        const toTeam = (e.submitter as HTMLButtonElement | null)?.value === 'team'
+        if (text) x.Cmd_ExecuteString(`${toTeam ? 'say_team' : 'say'} "${text}"`)
+        chatInput.value = ''
+        close()
+    })
+
     function open(k: Kind) {
+        if (k === 'quick' && kind && kind !== 'quick') return // never covers the team or buy screens
         if (k === 'class_t') team = 't'
         if (k === 'class_ct') team = 'ct'
-        if (kind !== k) { selected = 0; tab = k === 'buy' ? tab : 0 }
+        if (kind !== k) selected = 0
+        const opening = !kind
         kind = k
         render()
         root.hidden = false
         document.exitPointerLock?.()
-        x.Cmd_ExecuteString('joy_enable 0') // the engine would also move the player
+        if (opening) screenOpen(x, 'menu', true)
         if (!watching) {
             watching = true
             watchPad(() => {
@@ -263,7 +352,8 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         if (!kind) return
         kind = undefined
         root.hidden = true
-        x.Cmd_ExecuteString('joy_enable 1')
+        chatInput.blur()
+        screenOpen(x, 'menu', false)
     }
 
     function columns() {
@@ -274,21 +364,30 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         select(selected + dx + dy * columns())
     }
 
-    function switchTab(d: number) {
-        if (kind !== 'buy') return
-        tab = (tab + d + SHOP.length) % SHOP.length
+    function setTab(i: number) {
+        if (kind !== 'buy' && kind !== 'quick') return
+        categoryTab[kind] = i
         selected = 0
         render()
     }
 
+    function switchTab(d: number) {
+        const cats = categories()
+        if (cats && (kind === 'buy' || kind === 'quick')) setTab((categoryTab[kind] + d + cats.length) % cats.length)
+    }
+
     function back() {
-        if (kind === 'buy') close() // team/character must be picked, like in CS
+        if (kind === 'buy' || kind === 'quick') close() // team/character must be picked, like in CS
     }
 
     // keyboard: swallow everything while open so the game doesn't see it
     window.addEventListener('keydown', e => {
         if (!kind) return
         e.stopImmediatePropagation()
+        if (e.target === chatInput) { // typing a chat message
+            if (e.key === 'Escape') close()
+            return
+        }
         e.preventDefault()
         const k = e.key
         if (k === 'ArrowLeft') move(-1, 0)
@@ -299,20 +398,23 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         else if (k === 'Escape' || k === 'Backspace' || k === 'b' || k === 'B') back()
         else if (k === 'q' || k === 'Q' || (k === 'Tab' && e.shiftKey)) switchTab(-1)
         else if (k === 'e' || k === 'E' || k === 'Tab') switchTab(1)
+        else if (k === 't' || k === 'T') { if (!chat.hidden) chatInput.focus() }
         else if (/^[1-9]$/.test(k)) activate(Number(k) - 1)
     }, true)
     window.addEventListener('keyup', e => {
         if (!kind) return
         e.stopImmediatePropagation()
-        e.preventDefault()
+        if (e.target !== chatInput) e.preventDefault()
     }, true)
 
     let watching = false
     function onPad(b: number) {
+        if (document.activeElement === chatInput && b !== BTN.B) return
         if (b === BTN.A) activate(selected)
         else if (b === BTN.B || b === BTN.START) back()
         else if (b === BTN.X && kind === 'buy') run('autobuy')
         else if (b === BTN.Y && kind === 'buy') run('rebuy')
+        else if (b === BTN.Y && !chat.hidden) chatInput.focus() // brings up the on-screen keyboard where there is one
         else if (b === BTN.LB) switchTab(-1)
         else if (b === BTN.RB) switchTab(1)
         else if (b === BTN.UP) move(0, -1)
@@ -323,9 +425,10 @@ export function initMenus(x: Xash3D, zip: JSZip) {
 
     return {
         isOpen: () => !!kind,
+        openQuick: () => open('quick'),
         /** feed every engine console line here */
         onLine(line: string) {
-            const m = /JOUCS_MENU (team|class_t|class_ct|buy)/.exec(line)
+            const m = /JOUCS_MENU (team|class_t|class_ct|buy|quick)/.exec(line)
             // after the engine's echo returns: open() runs console commands itself
             if (m) setTimeout(() => open(m[1] as Kind), 0)
         },

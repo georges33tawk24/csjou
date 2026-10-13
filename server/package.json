@@ -1,20 +1,20 @@
 {
-  "name": "cs-web-server",
+  "name": "joucs",
   "version": "0.1.1",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build-docker": "TAG=$(node -p \"require('./package.json').version\") docker compose build",
-    "push-image": "TAG=$(node -p \"require('./package.json').version\") docker compose push",
     "serve": "vite preview"
   },
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@fontsource/black-ops-one": "5.2.6",
     "esbuild": "0.25.11",
     "jszip": "3.10.1",
+    "peerjs": "1.5.5",
     "typescript": "^5.9.3",
     "vite": "7.1.11",
     "xash3d-fwgs": "1.2.2"

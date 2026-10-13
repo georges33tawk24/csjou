@@ -1,68 +1,27 @@
-import {loadAsync} from 'jszip'
-import {Xash3D} from 'xash3d-fwgs'
+import type JSZip from 'jszip'
+import {type Net, Xash3D} from 'xash3d-fwgs'
 import xashURL from 'xash3d-fwgs/xash.wasm?url'
 import gl4esURL from 'xash3d-fwgs/libref_webgl2.wasm?url'
-import {Xash3DGameSocket} from "./gamesocket"
-import {initMenus} from "./menus"
-import {applySettings, initSettings, loadSettings} from "./settings"
-
-type EngineConfig = {
-    arguments: string[];
-    console: string[];
-    game_dir: string;
-    libraries: { client: string; server: string; extras: string; menu: string; filesystem: string };
-    dynamic_libraries: string[];
-    files_map: Record<string, string>;
-}
-
-type ServerState = {
-    name: string; map: string; maxPlayers: number; bots: number; difficulty: number; private: boolean; players: number
-}
+import '@fontsource/black-ops-one/latin-400.css' // stencil title font (OFL)
+import {mapsIn, openGameFiles, savedGameFiles, saveGameFiles, savedNav, saveNav} from './files'
+import {CODE_RE, findLobby, hostLobby, type Lobby, type LobbyInfo, newLobbyCode} from './lobby'
+import {initMenus, menuBackground} from './menus'
+import {applySettings, initSettings, loadSettings} from './settings'
 
 const SKILLS = ['Easy', 'Normal', 'Hard', 'Expert']
 const MAP_RE = /^[a-z0-9_]+$/
+const PASSWORD_RE = /^[A-Za-z0-9_-]{1,24}$/
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
-// localStorage can throw (private mode, blocked storage); settings are a convenience only
+// localStorage can throw (private mode, blocked storage); these are conveniences only
 const store = {
     get: (k: string, d = '') => { try { return localStorage.getItem(k) ?? d } catch { return d } },
     set: (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* ignore */ } },
 }
 
-// ---------- where the lobby server is ----------
-// The page is served by the JOUCS server itself (localhost, or the host's
-// Cloudflare link) or from GitHub Pages. Pages has a fixed address, so browsers
-// keep the game files between sessions; there, link.json (written by
-// `joucs.sh online`) says where the host's server currently is.
-
-const LINK_RE = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com\/?$/
-const onPages = location.hostname.endsWith('.github.io')
-
-async function findServer(): Promise<URL | undefined> {
-    if (!onPages) return new URL('./', location.href)
-    const owner = location.hostname.split('.')[0]
-    const repo = location.pathname.split('/')[1]
-    let link: { url?: string } | undefined
-    try {
-        // the API is fresher than the site's 10-minute cache
-        const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/link.json?ref=gh-pages`,
-            {cache: 'no-store', headers: {Accept: 'application/vnd.github.raw+json'}})
-        if (res.ok) link = await res.json()
-    } catch { /* fall back below */ }
-    link ??= await fetch(`link.json?${Date.now()}`, {cache: 'no-store'}).then(r => r.json()).catch(() => undefined)
-    return link?.url && LINK_RE.test(link.url) ? new URL(link.url.replace(/\/?$/, '/')) : undefined
-}
-
-const serverPromise = findServer()
-let server: URL | undefined
-const api = (path: string) => new URL(path, server).href
-
-// same values the server image hands out at /config
-const ENGINE: EngineConfig = {
+const ENGINE = {
     arguments: ['-windowed', '-game', 'cstrike'],
-    console: ['_vgui_menus 1'],
-    game_dir: 'cstrike',
     libraries: {
         client: 'cstrike/cl_dlls/client_emscripten_wasm32.wasm',
         server: 'cstrike/dlls/cs_emscripten_wasm32.wasm',
@@ -70,66 +29,91 @@ const ENGINE: EngineConfig = {
         extras: 'cstrike/extras.pk3',
         filesystem: 'filesystem_stdio.wasm',
     },
-    dynamic_libraries: ['dlls/cs_emscripten_wasm32.wasm', '/rodir/filesystem_stdio.wasm'],
-    files_map: {
+    dynamicLibraries: ['dlls/cs_emscripten_wasm32.wasm', '/rodir/filesystem_stdio.wasm'],
+    filesMap: {
         'dlls/cs_emscripten_wasm32.wasm': 'cstrike/dlls/cs_emscripten_wasm32.wasm',
         '/rodir/filesystem_stdio.wasm': 'filesystem_stdio.wasm',
     },
 }
 
-// ---------- game data: start downloading right away ----------
+// ---------- game modes (ReGameDLL settings) ----------
+// Every mode sets all of these, so the host can switch modes between maps.
 
-function showData(percent: number, text: string) {
+type ModeId = 'classic' | 'tdm' | 'ffa' | 'knife'
+type Cvars = Record<string, string | number>
+
+const BOT_WEAPONS = ['pistols', 'shotguns', 'sub_machine_guns', 'rifles', 'machine_guns', 'grenades', 'snipers', 'shield']
+const CLASSIC: Cvars = {
+    mp_forcerespawn: 0, mp_round_infinite: 0, mp_buy_anywhere: 0, mp_buytime: 1.5, mp_startmoney: 800,
+    mp_freeforall: 0, mp_respawn_immunitytime: 0, mp_give_player_c4: 1, mp_weapons_allow_map_placed: 1,
+    mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
+    mp_item_staytime: 300, bot_deathmatch: 0,
+    ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 1])),
+}
+const DEATHMATCH: Cvars = {
+    ...CLASSIC, mp_forcerespawn: 1, mp_round_infinite: 1, mp_buy_anywhere: 1, mp_buytime: -1, mp_startmoney: 16000,
+    mp_respawn_immunitytime: 2, mp_give_player_c4: 0, mp_freezetime: 0, mp_item_staytime: 15, bot_deathmatch: 1,
+}
+const MODES: Record<ModeId, { label: string; cvars: Cvars }> = {
+    classic: {label: 'Classic: bomb & hostage rounds', cvars: CLASSIC},
+    tdm: {label: 'Team deathmatch', cvars: DEATHMATCH},
+    ffa: {label: 'Free-for-all deathmatch', cvars: {...DEATHMATCH, mp_freeforall: 1}},
+    knife: {label: 'Knife arena', cvars: {
+        ...DEATHMATCH, mp_buytime: 0, mp_buy_anywhere: 0, mp_weapons_allow_map_placed: 0,
+        mp_t_default_weapons_secondary: '', mp_ct_default_weapons_secondary: '',
+        ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 0])),
+    }},
+}
+const isMode = (m: string): m is ModeId => m in MODES
+
+type ServerSetup = { name: string; map: string; mode: ModeId; maxPlayers: number; bots: number; skill: number }
+
+// ---------- game files ----------
+
+let zip: JSZip | undefined
+let zipBlob: Blob | undefined
+let maps: string[] = []
+
+const filesCard = $('files')
+function showFiles(state: 'missing' | 'busy' | 'ready' | 'error', text: string, percent = state === 'ready' ? 100 : 0) {
+    filesCard.dataset.state = state
+    $('filesText').textContent = text
     $('dataBar').style.width = `${percent}%`
-    $('dataText').textContent = text
 }
 
-async function fetchWithProgress(url: string) {
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`${url}: ${res.status}`)
-    const total = Number(res.headers.get('Content-Length')) || 0
-    const reader = res.body!.getReader()
-    const chunks: Uint8Array[] = []
-    let received = 0
-    for (;;) {
-        const {done, value} = await reader.read()
-        if (done) break
-        chunks.push(value)
-        received += value.length
-        if (total) showData(received / total * 100, `Downloading game files from the host… ${Math.round(received / total * 100)}% (only the first time)`)
-    }
-    return new Blob(chunks as BlobPart[]).arrayBuffer()
+function showArt(url: string) {
+    if (url) document.body.style.setProperty('--art', `url("${url}")`)
+}
+showArt(store.get('joucsArt'))
+
+async function useGameFiles(blob: Blob, save: boolean) {
+    showFiles('busy', 'Opening the game files…')
+    const z = await openGameFiles(blob)
+    const kept = !save || await saveGameFiles(blob)
+    zip = z
+    zipBlob = blob
+    maps = mapsIn(z)
+    fillMaps()
+    showFiles('ready', `Game files ready · ${maps.length} maps · ` +
+        (kept ? 'saved on this device' : 'this browser could not keep them, so you will need to load them again next time'))
+    menuBackground(z).then(url => { store.set('joucsArt', url); showArt(url) }).catch(() => undefined)
 }
 
-/** The host's valve.zip, kept in the browser and only downloaded again when the host's file changes. */
-async function gameFiles(): Promise<ArrayBuffer> {
-    const cache = typeof caches === 'undefined' ? undefined : await caches.open('joucs-game-files').catch(() => undefined)
-    const cached = await cache?.match('valve.zip')
-    let version = ''
-    if (server) {
-        const head = await fetch(api('valve.zip'), {method: 'HEAD'}).catch(() => undefined)
-        if (head?.ok) version = `${head.headers.get('Content-Length')}-${head.headers.get('Last-Modified')}`
-    }
-    if (cached && (!version || cached.headers.get('X-Joucs-Version') === version)) {
-        showData(100, 'Game files ready (saved on this device)')
-        return cached.arrayBuffer()
-    }
-    if (!server) throw new Error('the lobby is offline and this device has no saved game files yet')
-    const data = await fetchWithProgress(api('valve.zip'))
-    await cache?.put('valve.zip', new Response(data, {headers: {'X-Joucs-Version': version}})).catch(() => undefined)
-    showData(100, 'Game files ready')
-    return data
-}
+const MISSING = 'This device needs the CS 1.6 game files once (about 250 MB). ' +
+    'Join a lobby and the host sends them to you, or load your own valve.zip.'
+savedGameFiles()
+    .then(blob => blob ? useGameFiles(blob, false) : showFiles('missing', MISSING))
+    .catch(() => showFiles('missing', MISSING))
 
-const filesPromise = serverPromise.then(found => {
-    server = found
-    return Promise.all([
-        gameFiles().then(loadAsync),
-        fetch(ENGINE.libraries.extras).then(r => r.arrayBuffer()),
-    ])
+$<HTMLInputElement>('filesInput').addEventListener('change', e => {
+    const file = (e.target as HTMLInputElement).files?.[0]
+    if (file) useGameFiles(file, true).catch(err => showFiles('error', (err as Error).message))
 })
-filesPromise.catch(e => {
-    $('dataText').textContent = `Could not load game files (${e.message}). Refresh to retry.`
+
+// the touch layout and other client extras, served with the page
+const extrasPromise = fetch(ENGINE.libraries.extras).then(r => {
+    if (!r.ok) throw new Error(`${ENGINE.libraries.extras}: ${r.status}`)
+    return r.arrayBuffer()
 })
 
 // ---------- homepage ----------
@@ -141,183 +125,326 @@ const touchControls = $<HTMLInputElement>('touchControls')
 touchControls.checked = store.get('touchControls', String(!matchMedia('(hover: hover)').matches)) === 'true'
 touchControls.addEventListener('change', () => store.set('touchControls', String(touchControls.checked)))
 
-function selectTab(offline: boolean) {
-    $('tabOnline').setAttribute('aria-selected', String(!offline))
-    $('tabOffline').setAttribute('aria-selected', String(offline))
-    $('online').hidden = offline
-    $('offline').hidden = !offline
-    store.set('mode', offline ? 'offline' : 'online')
-}
-$('tabOnline').addEventListener('click', () => selectTab(false))
-$('tabOffline').addEventListener('click', () => selectTab(true))
-selectTab(store.get('mode') === 'offline')
-
-function bindRange(id: string) {
-    const input = $<HTMLInputElement>(id)
-    const out = $(id + 'Out')
-    const sync = () => { out.textContent = input.value }
-    input.addEventListener('input', sync)
-    return {input, sync}
-}
-const offBots = bindRange('offBots')
-const hostBots = bindRange('hostBots')
-const hostMax = bindRange('hostMax')
-// bots take player slots, so keep at least one free for a human
-function limitBots() {
-    hostBots.input.max = String(Math.min(12, Number(hostMax.input.value) - 1))
-    hostBots.sync()
-}
-hostMax.input.addEventListener('input', limitBots)
-
-for (const id of ['offDifficulty', 'hostDifficulty']) {
-    $(id).append(...SKILLS.map((s, i) => new Option(s, String(i))))
-}
-
-const offMap = $<HTMLSelectElement>('offMap')
-const offDifficulty = $<HTMLSelectElement>('offDifficulty')
-const hostMap = $<HTMLSelectElement>('hostMap')
-const hostDifficulty = $<HTMLSelectElement>('hostDifficulty')
-const hostPassword = $<HTMLInputElement>('hostPassword')
-hostPassword.value = store.get('hostPassword')
-const lobbyNameInput = $<HTMLInputElement>('lobbyNameInput')
-const hostVisibility = $<HTMLSelectElement>('hostVisibility')
-const lobbyPasswordInput = $<HTMLInputElement>('lobbyPasswordInput')
-const joinPassword = $<HTMLInputElement>('joinPassword')
-joinPassword.value = store.get('joinPassword')
-const PASSWORD_RE = /^[A-Za-z0-9_-]{1,24}$/
-const showLobbyPassword = () => { $('lobbyPasswordField').hidden = hostVisibility.value !== 'private' }
-hostVisibility.addEventListener('change', showLobbyPassword)
-
-offBots.input.value = store.get('offBots', '6')
-offBots.sync()
-offDifficulty.value = store.get('offDifficulty', '1')
-
-// nav = the server already has bot navigation data for the map. Without a
-// server (lobby offline, playing from GitHub Pages) the saved game files list the maps.
-type MapInfo = { name: string; nav: boolean }
-async function listMaps(): Promise<MapInfo[]> {
-    await serverPromise
-    if (server) {
-        const maps = await fetch(api('api/maps')).then(r => r.json()).catch(() => undefined)
-        if (maps) return maps
-    }
-    const [zip] = await filesPromise
-    return Object.keys(zip.files).filter(f => /^cstrike\/maps\/[a-z0-9_]+\.bsp$/.test(f))
-        .map(f => ({name: f.slice('cstrike/maps/'.length, -'.bsp'.length), nav: false})).sort((a, b) => a.name.localeCompare(b.name))
-}
-listMaps().then(maps => {
-    offMap.append(...maps.map(m => new Option(m.name, m.name)))
-    // online bots on a map without nav data take many minutes to appear the
-    // first time; playing that map offline once uploads the data instantly
-    hostMap.append(...maps.map(m => new Option(m.nav ? m.name : `${m.name} (play offline first for bots)`, m.name)))
-    offMap.value = store.get('offMap', 'de_dust2')
-    if (!offMap.value && maps.length) offMap.value = maps[0].name
-}).catch(() => undefined)
-
-let hostTouched = false
-for (const el of [lobbyNameInput, hostMap, hostDifficulty, hostMax.input, hostBots.input, hostVisibility, lobbyPasswordInput]) {
-    el.addEventListener('input', () => { hostTouched = true })
-}
-
-let lobby: ServerState | undefined
-
-async function refreshStatus() {
-    try {
-        await serverPromise
-        if (!server) throw new Error('no lobby link')
-        const s: ServerState = await fetch(api('api/status')).then(r => r.json())
-        lobby = s
-        $('statusDot').classList.add('on')
-        $('lobbyName').textContent = s.name
-        $('lobbyLock').hidden = !s.private
-        $('joinPasswordField').hidden = !s.private
-        $('statusText').textContent = `${s.map} · ${s.players}/${s.maxPlayers} players · ` +
-            `${s.bots} bot${s.bots === 1 ? '' : 's'} (${SKILLS[s.difficulty] ?? '?'})`
-        if (!hostTouched) {
-            lobbyNameInput.value = s.name
-            hostMap.value = s.map
-            hostDifficulty.value = String(s.difficulty)
-            hostMax.input.value = String(s.maxPlayers)
-            hostMax.sync()
-            limitBots()
-            hostBots.input.value = String(s.bots)
-            hostBots.sync()
-            hostVisibility.value = s.private ? 'private' : 'public'
-            lobbyPasswordInput.placeholder = s.private ? 'leave empty to keep the current one' : ''
-            showLobbyPassword()
-        }
-    } catch {
-        lobby = undefined
-        $('statusDot').classList.remove('on')
-        $('lobbyName').textContent = 'Lobby is offline'
-        $('lobbyLock').hidden = true
-        $('statusText').textContent = onPages
-            ? 'The host has not started JOUCS online. Refresh when they have. You can still play offline with bots.'
-            : 'The host has not started the server.'
-    }
-    $<HTMLButtonElement>('join').disabled = !lobby
-}
-refreshStatus()
-const statusTimer = setInterval(refreshStatus, 5000)
-
-$('apply').addEventListener('click', async () => {
-    const msg = $('hostMsg')
-    const isPrivate = hostVisibility.value === 'private'
-    const pw = lobbyPasswordInput.value.trim()
-    if (isPrivate && pw && !PASSWORD_RE.test(pw)) {
-        msg.className = 'msg err'
-        msg.textContent = 'Lobby password: 1–24 letters, numbers, - or _'
-        return
-    }
-    msg.className = 'msg'
-    msg.textContent = 'Creating the lobby…'
-    store.set('hostPassword', hostPassword.value)
-    try {
-        if (!server) throw new Error('The lobby server is offline.')
-        const res = await fetch(api('api/server'), {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                password: hostPassword.value,
-                name: lobbyNameInput.value.trim(),
-                map: hostMap.value,
-                maxPlayers: Number(hostMax.input.value),
-                bots: Number(hostBots.input.value),
-                difficulty: Number(hostDifficulty.value),
-                private: isPrivate,
-                lobbyPassword: isPrivate ? pw : '',
-            }),
-        })
-        if (!res.ok) throw new Error((await res.text()).trim())
-        const s: ServerState = await res.json()
-        hostTouched = false
-        lobbyPasswordInput.value = ''
-        if (isPrivate && pw) { joinPassword.value = pw; store.set('joinPassword', pw) } // the host joins too
-        msg.className = 'msg ok'
-        msg.textContent = `Lobby "${s.name}" is ready${s.private ? ' (private)' : ''}. A map change takes a few seconds.`
-        refreshStatus()
-    } catch (e) {
-        msg.className = 'msg err'
-        msg.textContent = (e as Error).message || 'Could not reach the server'
-    }
-})
-
-// a join that failed (wrong password, full lobby) reloads the page; say why
-let joinError: string | null = null
-try {
-    joinError = sessionStorage.getItem('joucsError')
-    sessionStorage.removeItem('joucsError')
-} catch { /* storage blocked */ }
-if (joinError) {
-    selectTab(false)
-    $('joinMsg').textContent = joinError
-}
-
-// ---------- controller + fullscreen ----------
-
 const fullscreen = $<HTMLInputElement>('fullscreen')
 fullscreen.checked = store.get('fullscreen', String(matchMedia('(hover: hover)').matches)) === 'true'
 fullscreen.addEventListener('change', () => store.set('fullscreen', String(fullscreen.checked)))
+
+const TABS = ['join', 'host', 'offline'] as const
+type Tab = typeof TABS[number]
+function selectTab(tab: Tab) {
+    for (const t of TABS) {
+        $(`tab-${t}`).setAttribute('aria-selected', String(t === tab))
+        $(t).hidden = t !== tab
+    }
+    store.set('tab', tab)
+}
+for (const t of TABS) $(`tab-${t}`).addEventListener('click', () => selectTab(t))
+const savedTab = store.get('tab') as Tab
+selectTab(TABS.includes(savedTab) ? savedTab : 'join')
+
+/** an input or select that remembers its value */
+function remember<T extends HTMLInputElement | HTMLSelectElement>(id: string, fallback: string): T {
+    const el = $<T>(id)
+    el.value = store.get(id, fallback)
+    if (!el.value) el.value = fallback
+    el.addEventListener('change', () => store.set(id, el.value))
+    return el
+}
+
+function range(id: string, fallback: string) {
+    const input = remember<HTMLInputElement>(id, fallback)
+    const out = $(`${id}Out`)
+    const sync = () => { out.textContent = input.value }
+    input.addEventListener('input', sync)
+    sync()
+    return {input, sync}
+}
+
+for (const id of ['hostMode', 'offMode']) {
+    $(id).append(...Object.entries(MODES).map(([value, m]) => new Option(m.label, value)))
+}
+for (const id of ['hostSkill', 'offSkill']) {
+    $(id).append(...SKILLS.map((s, i) => new Option(s, String(i))))
+}
+
+const hostName = remember<HTMLInputElement>('hostName', '')
+const hostMode = remember<HTMLSelectElement>('hostMode', 'classic')
+const hostMap = $<HTMLSelectElement>('hostMap')
+const hostSkill = remember<HTMLSelectElement>('hostSkill', '1')
+const hostMax = range('hostMax', '10')
+const hostBots = range('hostBots', '0')
+const hostAccess = remember<HTMLSelectElement>('hostAccess', 'public')
+const hostPassword = remember<HTMLInputElement>('hostPassword', '')
+const offMode = remember<HTMLSelectElement>('offMode', 'classic')
+const offMap = $<HTMLSelectElement>('offMap')
+const offSkill = remember<HTMLSelectElement>('offSkill', '1')
+const offBots = range('offBots', '6')
+
+// bots take player slots; keep one for the host and at least one for a friend
+function limitBots() {
+    hostBots.input.max = String(Math.min(12, Number(hostMax.input.value) - 2))
+    hostBots.sync()
+}
+hostMax.input.addEventListener('input', limitBots)
+limitBots()
+
+const showPasswordField = () => { $('hostPasswordField').hidden = hostAccess.value !== 'private' }
+hostAccess.addEventListener('change', showPasswordField)
+showPasswordField()
+
+function fillMaps() {
+    for (const [select, key] of [[hostMap, 'hostMap'], [offMap, 'offMap']] as const) {
+        select.replaceChildren(...maps.map(m => new Option(m, m)))
+        select.value = store.get(key, 'de_dust2')
+        if (!select.value && maps.length) select.value = maps.includes('de_dust2') ? 'de_dust2' : maps[0]
+        select.onchange = () => store.set(key, select.value)
+    }
+}
+
+// this browser's lobby code never changes, so an invite link keeps working
+let hostCode = store.get('lobbyCode')
+if (!CODE_RE.test(hostCode)) {
+    hostCode = newLobbyCode()
+    store.set('lobbyCode', hostCode)
+}
+const inviteLink = (code: string) => `${location.origin}${location.pathname}#join=${code}`
+$('hostCode').textContent = hostCode
+
+$('copyInvite').addEventListener('click', async e => {
+    const button = e.currentTarget as HTMLElement
+    try {
+        await navigator.clipboard.writeText(inviteLink(hostCode))
+        button.textContent = 'Copied!'
+    } catch {
+        button.textContent = inviteLink(hostCode)
+    }
+    setTimeout(() => { button.textContent = 'Copy invite link' }, 4000)
+})
+
+// ---------- joining a lobby ----------
+
+const joinCode = $<HTMLInputElement>('joinCode')
+const joinPassword = $<HTMLInputElement>('joinPassword')
+const joinMsg = $('joinMsg')
+let lobby: Lobby | undefined
+let lobbyInfo: LobbyInfo | undefined
+let lookingFor = ''
+let playing = false
+
+function showLobby(text: string, error = false) {
+    $('lobbyCard').hidden = false
+    $('lobbyDot').classList.toggle('on', !!lobbyInfo)
+    $('lobbyName').textContent = lobbyInfo?.name ?? text
+    $('lobbyName').classList.toggle('err', error)
+    $('lobbyLock').hidden = !lobbyInfo?.private
+    $('joinPasswordField').hidden = !lobbyInfo?.private
+    $('lobbyInfo').textContent = lobbyInfo
+        ? `${lobbyInfo.map} · ${lobbyInfo.mode} · ${lobbyInfo.players}/${lobbyInfo.maxPlayers} players`
+        : error ? '' : 'Connecting to the host…'
+}
+
+async function refreshLobby() {
+    if (!lobby) return
+    lobbyInfo = await lobby.info()
+    showLobby('')
+}
+
+async function lookUp(code: string) {
+    code = code.toUpperCase()
+    if (code === lookingFor && lobby) return lobby
+    lobby?.close()
+    lobby = lobbyInfo = undefined
+    lookingFor = code
+    showLobby('Looking for the lobby…')
+    try {
+        const found = await findLobby(code)
+        if (lookingFor !== code) { found.close(); return undefined }
+        lobby = found
+        found.onClose(() => {
+            if (playing) setTimeout(() => backToHome('The host closed the lobby.'), 0)
+            else if (lobby === found) { lobby = lobbyInfo = undefined; showLobby('The host closed this lobby.', true) }
+        })
+        await refreshLobby()
+        return found
+    } catch (e) {
+        if (lookingFor === code) showLobby((e as Error).message, true)
+        return undefined
+    }
+}
+
+joinCode.addEventListener('input', () => {
+    joinCode.value = joinCode.value.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    joinMsg.textContent = ''
+    if (CODE_RE.test(joinCode.value)) lookUp(joinCode.value)
+})
+setInterval(() => { if (!playing) refreshLobby().catch(() => undefined) }, 4000)
+
+// invite links open straight on the lobby
+const invited = /^#join=([A-Za-z0-9]{6})$/.exec(location.hash)?.[1]
+if (invited) {
+    selectTab('join')
+    joinCode.value = invited.toUpperCase()
+    lookUp(joinCode.value)
+}
+
+$('joinBtn').addEventListener('click', async e => {
+    const button = e.currentTarget as HTMLButtonElement
+    joinMsg.textContent = ''
+    if (!CODE_RE.test(joinCode.value)) {
+        joinMsg.textContent = 'Enter the 6-character lobby code from the host.'
+        joinCode.focus()
+        return
+    }
+    button.disabled = true
+    try {
+        const found = await lookUp(joinCode.value)
+        if (!found || !lobbyInfo) return
+        const pw = joinPassword.value.trim()
+        if (lobbyInfo.private && !pw) throw new Error('This lobby needs a password. Ask the host.')
+        let started = 0
+        const result = await found.join(playerName(), pw, !zip, (got, total) => {
+            started ||= performance.now()
+            const mbps = got / 1e6 / Math.max(1, (performance.now() - started) / 1000)
+            showFiles('busy', `Getting the game files from the host: ${Math.round(got / 1e6)} of ${Math.round(total / 1e6)} MB ` +
+                `(${mbps.toFixed(1)} MB/s). Only needed once.`, got / total * 100)
+        })
+        if (result.files) await useGameFiles(result.files, true)
+        if (!zip) throw new Error('No game files.')
+        await launch(result.net, x => x.Cmd_ExecuteString('connect 127.0.0.1:8080'))
+    } catch (err) {
+        joinMsg.textContent = (err as Error).message
+        if (filesCard.dataset.state === 'busy') showFiles(zip ? 'ready' : 'missing', zip ? 'Game files ready' : MISSING)
+    } finally {
+        button.disabled = false
+    }
+})
+
+// ---------- hosting ----------
+
+let hosting: { setup: ServerSetup; guests: () => number } | undefined
+
+$('hostBtn').addEventListener('click', async e => {
+    const button = e.currentTarget as HTMLButtonElement
+    const msg = $('hostMsg')
+    msg.className = 'msg err'
+    if (!zip || !zipBlob) {
+        msg.textContent = 'Load the game files first (top of the page).'
+        return
+    }
+    const isPrivate = hostAccess.value === 'private'
+    const password = hostPassword.value.trim()
+    if (isPrivate && !PASSWORD_RE.test(password)) {
+        msg.textContent = 'Lobby password: 1–24 letters, numbers, - or _'
+        hostPassword.focus()
+        return
+    }
+    const maxPlayers = clamp(Number(hostMax.input.value), 2, 16)
+    const setup: ServerSetup = {
+        name: cleanName(hostName.value, `${playerName()}'s lobby`, 32),
+        map: MAP_RE.test(hostMap.value) ? hostMap.value : 'de_dust2',
+        mode: isMode(hostMode.value) ? hostMode.value : 'classic',
+        maxPlayers,
+        bots: clamp(Number(hostBots.input.value), 0, Math.min(12, maxPlayers - 2)),
+        skill: clamp(Number(hostSkill.value), 0, 3),
+    }
+    msg.className = 'msg'
+    msg.textContent = 'Opening your lobby…'
+    button.disabled = true
+    try {
+        const files = zipBlob
+        const lobbyHost = await hostLobby({
+            code: hostCode,
+            password: isPrivate ? password : '',
+            info: () => ({name: setup.name, map: setup.map, mode: MODES[setup.mode].label, maxPlayers: setup.maxPlayers, bots: setup.bots}),
+            gameFiles: async () => files,
+        })
+        hosting = {setup, guests: lobbyHost.guests}
+        keepRunningWhenHidden()
+        await launch(lobbyHost.net, x => startServer(x, setup))
+    } catch (err) {
+        msg.className = 'msg err'
+        msg.textContent = (err as Error).message
+        button.disabled = false
+    }
+})
+
+/**
+ * A hidden tab gets no animation frames, so the engine (the server everyone is
+ * playing on) would stop when the host switches tabs. While hidden, frames come
+ * from a worker's timer, which the browser doesn't throttle like the page's.
+ */
+function keepRunningWhenHidden() {
+    const worker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 16)'], {type: 'text/javascript'})))
+    const queue: FrameRequestCallback[] = []
+    worker.onmessage = () => { for (const cb of queue.splice(0)) cb(performance.now()) }
+    const raf = window.requestAnimationFrame.bind(window)
+    window.requestAnimationFrame = cb => {
+        if (!document.hidden) return raf(cb)
+        queue.push(cb)
+        return 0
+    }
+}
+
+// ---------- offline ----------
+
+$('offBtn').addEventListener('click', () => {
+    if (!zip) {
+        $('offMsg').textContent = 'Load the game files first (top of the page).'
+        return
+    }
+    launch(undefined, x => startServer(x, {
+        name: 'JOUCS offline',
+        map: MAP_RE.test(offMap.value) ? offMap.value : 'de_dust2',
+        mode: isMode(offMode.value) ? offMode.value : 'classic',
+        maxPlayers: 16,
+        bots: clamp(Number(offBots.input.value), 0, 12),
+        skill: clamp(Number(offSkill.value), 0, 3),
+    }))
+})
+
+// ---------- the game's server (host and offline) ----------
+
+function writeServerConfig(x: Xash3D, s: ServerSetup) {
+    // the game runs listenserver.cfg at every map start, after its own configs
+    const cvars: Cvars = {
+        ...MODES[s.mode].cvars,
+        bot_join_after_player: 0, bot_quota_mode: 'normal', bot_difficulty: s.skill, bot_quota: s.bots,
+    }
+    x.em!.FS.writeFile('/rodir/cstrike/listenserver.cfg',
+        Object.entries(cvars).map(([k, v]) => `${k} "${v}"\n`).join(''))
+}
+
+/** bot navigation meshes take ~30 s to build per map, so keep them */
+async function prepareNav(x: Xash3D, map: string) {
+    const path = `/rodir/cstrike/maps/${map}.nav`
+    const nav = await savedNav(map)
+    if (nav) {
+        x.em!.FS.writeFile(path, new Uint8Array(nav))
+        return
+    }
+    x.waitLog(`${map}.nav' saved`, undefined, 30 * 60_000)
+        .then(() => saveNav(map, x.em!.FS.readFile(path)))
+        .catch(() => undefined)
+}
+
+async function startServer(x: Xash3D, s: ServerSetup) {
+    writeServerConfig(x, s)
+    await prepareNav(x, s.map)
+    x.Cmd_ExecuteString(`maxplayers ${s.maxPlayers}`)
+    x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
+    x.Cmd_ExecuteString(`hostname "${s.name}"`)
+    x.Cmd_ExecuteString(`map ${s.map}`)
+}
+
+async function changeMap(map: string, mode: string) {
+    if (!hosting || !engine || !maps.includes(map) || !isMode(mode)) return
+    Object.assign(hosting.setup, {map, mode}) // the lobby info friends see reads this too
+    writeServerConfig(engine, hosting.setup)
+    await prepareNav(engine, map)
+    engine.Cmd_ExecuteString(`changelevel ${map}`) // friends stay connected
+}
+
+// ---------- in game ----------
 
 function enterFullscreen() {
     document.documentElement.requestFullscreen?.({navigationUI: 'hide'}).catch(() => undefined)
@@ -329,8 +456,6 @@ document.addEventListener('fullscreenchange', () => {
     fsButton.hidden = !document.fullscreenEnabled || !!document.fullscreenElement
 })
 
-// ---------- starting the game ----------
-
 // last engine console lines, readable as window.joucsLog from devtools
 const engineLog: string[] = []
 Object.assign(window, {joucsLog: engineLog})
@@ -339,8 +464,8 @@ function keepLog(line: string) {
     if (engineLog.length > 500) engineLog.shift()
     if (line.includes('Issuing host shutdown')) stopEngine()
     if (line.includes('JOUCS_MENU quit')) setTimeout(backToHome, 0) // the game menu's Quit (patched at build)
-    if (line.includes('invalid password')) setTimeout(() => backToHome('Wrong lobby password.'), 0)
     if (line.includes('server is full')) setTimeout(() => backToHome('This lobby is full.'), 0)
+    if (line.includes('Server connection timed out')) setTimeout(() => backToHome('Lost the connection to the host.'), 0)
     // The touch layout loads while connecting, so retarget its gear (edit) button once the
     // team screen shows: it opens the JOUCS pause screen, which has "Edit touch layout".
     if (line.includes('JOUCS_MENU team') && touchControls.checked) {
@@ -371,11 +496,22 @@ const settingsUi = initSettings({
     quitHome: backToHome,
     touch: () => touchControls.checked,
     enterFullscreen,
+    openQuick: () => menus?.openQuick(),
+    host: () => hosting && {
+        code: hostCode,
+        link: inviteLink(hostCode),
+        guests: hosting.guests(),
+        maps,
+        modes: Object.entries(MODES).map(([id, m]) => [id, m.label]),
+        map: hosting.setup.map,
+        mode: hosting.setup.mode,
+        change: changeMap,
+    },
 })
 $('openSettings').addEventListener('click', () => settingsUi.openSettings())
 
 function saveConfig(write: boolean) {
-    if (menus?.isOpen() || settingsUi.isOpen()) return // these switch the controller off while open
+    if (menus?.isOpen() || settingsUi.isOpen()) return // the controller is unbound while these are open
     try {
         if (write && !engineStopped) engine!.Cmd_ExecuteString('host_writeconfig')
         store.set('engineConfig', new TextDecoder().decode(engine!.em!.FS.readFile(CONFIG_PATH)))
@@ -389,56 +525,71 @@ function backToHome(error?: string) {
     location.reload()
 }
 
+// a game that ended badly reloads the page; say why
+try {
+    const error = sessionStorage.getItem('joucsError')
+    sessionStorage.removeItem('joucsError')
+    if (error) joinMsg.textContent = error
+} catch { /* storage blocked */ }
+
 function confirmLeave(e: BeforeUnloadEvent) {
     saveConfig(true)
     e.preventDefault()
 }
 
+function clamp(n: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, Math.round(n) || 0))
+}
+
+/** a name as a console argument: no quotes or separators */
+function cleanName(name: string, fallback: string, max = 24) {
+    return name.replace(/["\\;\u0000-\u001f]/g, '').trim().slice(0, max) || fallback
+}
+
 function playerName() {
-    const name = username.value.replace(/[";\\]/g, '').trim().slice(0, 24) || 'Player'
+    const name = cleanName(username.value, 'Player')
     store.set('username', name)
     return name
 }
 
-async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> | void) {
+async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<void> | void) {
     const name = playerName()
-    clearInterval(statusTimer)
-    // still inside the click handler, so the browser allows fullscreen here
+    playing = true
+    // needs a recent click: after a long download this fails quietly and the in-game button stays
     if (fullscreen.checked) enterFullscreen()
     document.body.classList.add('playing')
 
-    const config = ENGINE
-    const opts = {
+    const x = new Xash3D({
         canvas: $<HTMLCanvasElement>('canvas'),
-        arguments: config.arguments || ['-windowed'],
+        arguments: ENGINE.arguments,
         libraries: {
-            filesystem: config.libraries.filesystem,
+            filesystem: ENGINE.libraries.filesystem,
             xash: xashURL,
-            menu: config.libraries.menu,
-            server: config.libraries.server,
-            client: config.libraries.client,
+            menu: ENGINE.libraries.menu,
+            server: ENGINE.libraries.server,
+            client: ENGINE.libraries.client,
             render: {gl4es: gl4esURL},
         },
-        dynamicLibraries: config.dynamic_libraries,
-        filesMap: config.files_map,
+        dynamicLibraries: ENGINE.dynamicLibraries,
+        filesMap: ENGINE.filesMap,
         module: {print: keepLog, printErr: keepLog},
-    }
-    const x = online ? new Xash3DGameSocket(server!, opts) : new Xash3D(opts)
+    })
+    if (net) x.net = net
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
-    const [[zip, extras]] = await Promise.all([filesPromise, x.init()])
+    const [extras] = await Promise.all([extrasPromise, x.init()])
 
-    await Promise.all(Object.entries(zip.files).map(async ([filename, file]) => {
+    await Promise.all(Object.entries(zip!.files).map(async ([filename, file]) => {
         if (file.dir) return
         const path = '/rodir/' + filename
         x.em!.FS.mkdirTree(path.split('/').slice(0, -1).join('/'))
         x.em!.FS.writeFile(path, await file.async('uint8array'))
     }))
-    x.em!.FS.writeFile(`/rodir/${config.game_dir}/extras.pk3`, new Uint8Array(extras))
+    x.em!.FS.writeFile('/rodir/cstrike/extras.pk3', new Uint8Array(extras))
     const savedConfig = store.get('engineConfig')
     if (savedConfig) x.em!.FS.writeFile(CONFIG_PATH, savedConfig)
     x.em!.FS.chdir('/rodir')
     engine = x
-    menus = initMenus(x, zip)
+    menus = initMenus(x, zip!)
 
     $('logo').classList.add('done')
     x.main()
@@ -447,74 +598,12 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
         fsButton.remove() // it would cover touch buttons; Fullscreen is in the pause screen instead
     }
     x.Cmd_ExecuteString(`name "${name}"`)
-    for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
     x.Cmd_ExecuteString('_vgui_menus 1') // server sends team/buy menus as VGUI, which open the JOUCS screens
     x.Cmd_ExecuteString('con_notifytime 0') // no console text over the game (chat and kill feed are HUD)
     x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away
-    applySettings(x, loadSettings()) // controller layout, sensitivity, video, audio
+    applySettings(x, loadSettings()) // controller layout, crosshair, sensitivity, video, audio
     setInterval(() => saveConfig(true), 30_000)
     document.addEventListener('visibilitychange', () => { if (document.hidden) saveConfig(true) })
     window.addEventListener('beforeunload', confirmLeave)
     await afterStart(x)
 }
-
-$('join').addEventListener('click', async () => {
-    const joinMsg = $('joinMsg')
-    joinMsg.textContent = ''
-    if (lobby && lobby.players + lobby.bots >= lobby.maxPlayers) {
-        joinMsg.textContent = 'This lobby is full.'
-        return
-    }
-    let pw = ''
-    if (lobby?.private) {
-        pw = joinPassword.value.trim()
-        if (!PASSWORD_RE.test(pw)) {
-            joinMsg.textContent = 'Enter the lobby password (ask the host).'
-            joinPassword.focus()
-            return
-        }
-        store.set('joinPassword', pw)
-        // the engine would only show a rejection inside its own menu, so check first
-        const res = await fetch(api('api/join'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: pw})})
-            .catch(() => undefined)
-        if (!res?.ok) {
-            joinMsg.textContent = res ? (await res.text()).trim() : 'Could not reach the lobby.'
-            joinPassword.select()
-            return
-        }
-    }
-    launch(true, x => {
-        x.Cmd_ExecuteString(`password "${pw}"`) // sent with the connection request
-        x.Cmd_ExecuteString('connect 127.0.0.1:8080')
-    })
-})
-
-$('playOffline').addEventListener('click', () => {
-    const map = MAP_RE.test(offMap.value) ? offMap.value : 'de_dust2'
-    const bots = Math.min(12, Math.max(0, Number(offBots.input.value) | 0))
-    const skill = Math.min(3, Math.max(0, Number(offDifficulty.value) | 0))
-    store.set('offMap', map)
-    store.set('offBots', String(bots))
-    store.set('offDifficulty', String(skill))
-
-    launch(false, async x => {
-        const navPath = `/rodir/cstrike/maps/${map}.nav`
-        // reuse the server's bot navigation data when it has it
-        const nav = server ? await fetch(api(`api/nav/${map}`)).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null) : null
-        if (nav) x.em!.FS.writeFile(navPath, new Uint8Array(nav))
-
-        x.Cmd_ExecuteString('maxplayers 16')
-        x.Cmd_ExecuteString('sv_lan 1')
-        // bots are added once the local player is in the game
-        await x.waitLog('propagation complete', `map ${map}`, 120_000).catch(() => undefined)
-        for (const cmd of ['bot_join_after_player 0', 'bot_quota_mode normal', `bot_difficulty ${skill}`, `bot_quota ${bots}`]) {
-            x.Cmd_ExecuteString(cmd)
-        }
-
-        // first bots on this map: the game builds nav data (~30s), share it with the server
-        if (!nav && bots > 0 && server) {
-            await x.waitLog(`${map}.nav' saved`, undefined, 15 * 60_000)
-            await fetch(api(`api/nav/${map}`), {method: 'POST', body: x.em!.FS.readFile(navPath)})
-        }
-    })
-})

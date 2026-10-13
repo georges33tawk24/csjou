@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fetch the exact source versions yohimik/webxash3d-fwgs was built from.
-# The original forks were deleted; these commits survive in the upstream repos.
+# Fetch the exact CS client version yohimik/webxash3d-fwgs was built from
+# (the engine itself comes from the xash3d-fwgs npm package). The original
+# forks were deleted; these commits survive in the upstream repos.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -12,19 +13,6 @@ fetch() { # dir url sha
     git -C "$1" checkout -q FETCH_HEAD
     echo "ok $1 @ ${3:0:8}"
 }
-
-# Engine with the Go/WebRTC network hooks ("merged" branch, Jan 2026)
-E=src/xash3d-fwgs
-fetch $E https://github.com/FWGS/xash3d-fwgs f85aa0c8f7d46c27191132b44d872c8e331308de
-fetch $E/3rdparty/MultiEmulator https://github.com/FWGS/MultiEmulator 11ff077ca58b9394a0eff0e89dd8980c2c252956
-fetch $E/3rdparty/bzip2/bzip2 https://gitlab.com/bzip2/bzip2 66c46b8c9436613fd81bc5d03f63a61933a4dcc3
-fetch $E/3rdparty/extras/xash-extras https://github.com/FWGS/xash-extras 0c83a63d000492e65c1620125f8d9a07d36495f8
-fetch $E/3rdparty/libbacktrace/libbacktrace https://github.com/ianlancetaylor/libbacktrace 793921876c981ce49759114d7bb89bb89b2d3a2d
-fetch $E/3rdparty/library_suffix https://github.com/ololoken/library-suffix 73569f7c13fa3e36ef17f9624d8603770dd92f5b
-fetch $E/3rdparty/opus/opus https://github.com/xiph/opus 82ac57d9f1aaf575800cf17373348e45b7ce6c0d
-fetch $E/3rdparty/libogg/libogg https://github.com/xiph/ogg 7cf42ea17aef7bc1b7b21af70724840a96c2e7d0
-fetch $E/3rdparty/vorbis/vorbis-src https://github.com/xiph/vorbis bb4047de4c05712bf1fd49b9584c360b8e4e0adf
-fetch $E/3rdparty/opusfile/opusfile https://github.com/xiph/opusfile 3ecc22aa0a4430f61c2403d57370a089536d197a
 
 # CS 1.6 client + ReGameDLL server, with web (Emscripten) support
 C=src/cs16-client
@@ -38,5 +26,3 @@ fetch $C/3rdparty/yapb https://github.com/yapb/yapb 34772be5cadfd1538758a5cc03de
 fetch $C/3rdparty/yapb/ext/crlib https://github.com/yapb/crlib b5f7ccc23dec2d018048b40085f78255cc232e52
 fetch $C/3rdparty/yapb/ext/linkage https://github.com/yapb/linkage a21540a52d7559333ad9d8326411daf78af62891
 
-# Go wrapper around the engine (surviving copy of yohimik/goxash3d-fwgs)
-fetch src/goxash3d-fwgs https://github.com/kzzalews/goxash3d-fwgs dd563e429ad3c4a0e96ad929b1e87911d7f94c6d

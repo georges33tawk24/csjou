@@ -6,44 +6,27 @@ on:
 
 permissions:
   contents: write # publish the page to the gh-pages branch
-  packages: write
 
 jobs:
-  image:
+  page:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: ./fetch-sources.sh
       - name: Build
         run: |
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest" >> "$GITHUB_ENV"
-          if ! docker build --progress=plain --build-arg BUILDPLATFORM=linux/amd64 \
-            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
-            -t "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cs-web-server:latest" . > build.log 2>&1; then
-            # job logs need repo admin rights; annotations are public, so surface the tail there
-            { grep -E 'error:|Error [0-9]|CMake Error|undefined reference|fatal|No such file' build.log | grep -v 'Looking for' | head -n 8
+          if ! docker build --progress=plain --target web --output type=local,dest=page . > build.log 2>&1; then
+            # job logs need repo admin rights; annotations are public, so surface the errors there
+            { grep -E 'error( TS[0-9]+)?:|Error [0-9]|CMake Error|undefined reference|fatal|No such file' build.log | grep -v 'Looking for' | head -n 8
               tail -n 1 build.log; } | tr -d '\r' | cut -c1-900 \
               | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           fi
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push
-        run: docker push "$IMAGE"
-      - name: Publish the page to GitHub Pages
-        # The same page the server serves, minus the game files (those stay on
-        # the host). A fixed address lets browsers keep the game files between
-        # sessions. One fresh commit each time keeps the branch small; the
-        # host's current lobby link (link.json, written by joucs.sh) is kept.
+      - name: Publish to GitHub Pages
+        # One fresh commit each time keeps the branch small. A fixed address
+        # matters: browsers keep the game files per site.
         run: |
-          id=$(docker create --platform linux/386 "$IMAGE")
-          docker cp "$id:/xashds/public/." page
-          docker rm "$id" >/dev/null
           test ! -e page/valve.zip
-          if git fetch -q --depth 1 origin gh-pages && git show FETCH_HEAD:link.json > page/link.json; then :; else echo '{"url": ""}' > page/link.json; fi
           touch page/.nojekyll
           cd page
           git init -q -b gh-pages

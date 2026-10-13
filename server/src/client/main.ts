@@ -3,6 +3,7 @@ import {Xash3D} from 'xash3d-fwgs'
 import xashURL from 'xash3d-fwgs/xash.wasm?url'
 import gl4esURL from 'xash3d-fwgs/libref_webgl2.wasm?url'
 import {Xash3DWebRTC} from "./webrtc"
+import {initMenus} from "./menus"
 
 type EngineConfig = {
     arguments: string[];
@@ -179,7 +180,7 @@ const CONTROLLER: [string, string, string, string][] = [
     ['Y_BUTTON', '+use', 'Y', 'Use / defuse'],
     ['STICK1', '+speed', 'Left stick click', 'Walk quietly'],
     ['STICK2', 'slot3', 'Right stick click', 'Knife'],
-    ['DPAD_UP', 'autobuy', 'D-pad up', 'Auto-buy'],
+    ['DPAD_UP', 'buy', 'D-pad up', 'Open the shop'],
     ['DPAD_DOWN', 'rebuy', 'D-pad down', 'Rebuy last round'],
     ['DPAD_LEFT', 'slot1', 'D-pad left', 'Primary weapon · menu option 1 (e.g. Terrorists)'],
     ['DPAD_RIGHT', 'slot2', 'D-pad right', 'Pistol · menu option 2 (e.g. Counter-Terrorists)'],
@@ -220,15 +221,18 @@ function keepLog(line: string) {
     // Quit in the game menu stops the engine; the frozen canvas would stay up.
     // The engine writes config.cfg right after this line, so wait a tick.
     if (line.includes('Issuing host shutdown')) setTimeout(backToHome, 0)
+    menus?.onLine(line)
 }
 
 // The browser filesystem is wiped on every load, so keep the engine's
 // config.cfg (keybinds, sensitivity, video) in localStorage.
 const CONFIG_PATH = '/rodir/cstrike/config.cfg'
-const PAD_LAYOUT = '2' // bump to re-apply CONTROLLER binds over saved configs
+const PAD_LAYOUT = '3' // bump to re-apply CONTROLLER binds over saved configs
 let engine: Xash3D | undefined
+let menus: ReturnType<typeof initMenus> | undefined
 
 function saveConfig(write: boolean) {
+    if (menus?.isOpen()) return // menus switch the controller off while open
     try {
         if (write) engine!.Cmd_ExecuteString('host_writeconfig')
         store.set('engineConfig', new TextDecoder().decode(engine!.em!.FS.readFile(CONFIG_PATH)))
@@ -290,12 +294,15 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
     if (savedConfig) x.em!.FS.writeFile(CONFIG_PATH, savedConfig)
     x.em!.FS.chdir('/rodir')
     engine = x
+    menus = initMenus(x, zip)
 
     $('logo').classList.add('done')
     x.main()
     if (touchControls.checked) x.Cmd_ExecuteString('touch_enable 1')
     x.Cmd_ExecuteString(`name "${name}"`)
     for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
+    x.Cmd_ExecuteString('_vgui_menus 1') // server sends team/buy menus as VGUI, which open the JOUCS screens
+    x.Cmd_ExecuteString('con_notifytime 0') // no console text over the game (chat and kill feed are HUD)
     // apply the JOUCS controller layout once; after that, binds changed in
     // Options > Controls are kept in the saved config
     if (store.get('padLayout') !== PAD_LAYOUT) {

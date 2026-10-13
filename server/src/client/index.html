@@ -150,8 +150,8 @@
         .bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
         .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
 
-        footer { width: 100%; max-width: 460px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 12px; }
-        footer label { display: inline-flex; gap: 6px; align-items: center; }
+        #home > footer { width: 100%; max-width: 460px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 12px; }
+        #home > footer label { display: inline-flex; gap: 6px; align-items: center; }
         .toggles { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
         .pad { border-top: 0; padding-top: 0; text-align: left; }
         .pad summary { text-align: center; }
@@ -175,6 +175,83 @@
             cursor: pointer;
         }
         .fs[hidden] { display: none; }
+
+        /* ---------- team / character / buy screens ---------- */
+        .menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); }
+        .menu[hidden] { display: none; }
+        .menu-panel {
+            width: min(980px, 100%);
+            max-height: calc(100vh - 32px);
+            display: flex;
+            flex-direction: column;
+            background: rgba(23, 26, 21, 0.95);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .menu-head { padding: 18px 20px 0; display: flex; flex-direction: column; gap: 12px; }
+        .menu-head h2 { margin: 0; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+        .menu-tabs { display: flex; gap: 6px; overflow-x: auto; }
+        .menu-tabs:empty { display: none; }
+        .menu-tabs button, .menu-actions button {
+            padding: 8px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #0f110e;
+            color: var(--muted);
+            font: inherit;
+            font-weight: 600;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .menu-tabs button[aria-selected=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+            gap: 10px;
+            padding: 16px 20px;
+            overflow-y: auto;
+        }
+        .card {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 28px 12px 12px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #0f110e;
+            color: var(--text);
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+        .card[aria-selected=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: #1d1a12; }
+        .card .pic { aspect-ratio: 3 / 1; display: grid; place-items: center; font-size: 34px; color: var(--muted); }
+        .menu:not([data-kind=buy]) .card .pic { aspect-ratio: 4 / 3; }
+        .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .card .name { font-weight: 700; }
+        .card .price { color: var(--ok); font-variant-numeric: tabular-nums; font-size: 14px; }
+        .card kbd { position: absolute; top: 8px; left: 12px; font: 12px/1 ui-monospace, Menlo, monospace; color: var(--muted); }
+        .card .team { position: absolute; top: 7px; right: 10px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; font-weight: 800; color: var(--muted); }
+        @keyframes bought { from { background: rgba(143, 209, 122, 0.35); } }
+        .card.bought { animation: bought 0.6s ease-out; }
+        .menu-foot {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 20px 16px;
+            border-top: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .menu-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+        .menu-actions[hidden] { display: none; }
+        .menu-actions button { color: var(--text); }
+        .card:hover, .menu-tabs button:hover, .menu-actions button:hover { filter: brightness(1.15); }
+        @media (prefers-reduced-motion: reduce) { .card.bought { animation: none; } }
 
         /* ---------- in game ---------- */
         #game { display: none; }
@@ -303,6 +380,23 @@
 <div id="game">
     <div id="logo">JOUCS</div>
     <button id="fsButton" class="fs" hidden>Fullscreen</button>
+    <div id="menu" class="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+        <div class="menu-panel">
+            <header class="menu-head">
+                <h2 id="menuTitle"></h2>
+                <nav id="menuTabs" class="menu-tabs" aria-label="Categories"></nav>
+            </header>
+            <div id="menuGrid" class="menu-grid"></div>
+            <footer class="menu-foot">
+                <div id="menuActions" class="menu-actions">
+                    <button data-cmd="autobuy">Auto-buy</button>
+                    <button data-cmd="rebuy">Rebuy</button>
+                    <button data-cmd="chooseteam">Change team</button>
+                </div>
+                <span id="menuHint"></span>
+            </footer>
+        </div>
+    </div>
     <canvas id="canvas"></canvas>
     <p id="warning">If it's not starting, try to enable microphone and refresh</p>
 </div>

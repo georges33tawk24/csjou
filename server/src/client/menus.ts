@@ -1,5 +1,6 @@
 import type JSZip from 'jszip'
 import type {Xash3D} from 'xash3d-fwgs'
+import {BTN, watchPad} from './pad'
 
 // JOUCS team / character / buy screens, drawn over the game.
 //
@@ -249,8 +250,13 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         root.hidden = false
         document.exitPointerLock?.()
         x.Cmd_ExecuteString('joy_enable 0') // the engine would also move the player
-        padSeen = false
-        requestAnimationFrame(pollPad)
+        if (!watching) {
+            watching = true
+            watchPad(() => {
+                if (!kind) watching = false
+                return !!kind
+            }, onPad, (dx, dy) => move(dx, dy))
+        }
     }
 
     function close() {
@@ -301,37 +307,18 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         e.preventDefault()
     }, true)
 
-    // controller: standard mapping, edge-triggered; the stick repeats while held
-    let prev: boolean[] = []
-    let padSeen = false
-    let stickAt = 0
-    function pollPad(now: number) {
-        if (!kind) return
-        const pad = [...(navigator.getGamepads?.() ?? [])].find(p => p)
-        if (pad) {
-            const down = pad.buttons.map(b => b.pressed)
-            // ignore whatever was held when the menu opened (e.g. the D-pad press)
-            const pressed = (i: number) => padSeen && down[i] && !prev[i]
-            if (pressed(0)) activate(selected)
-            if (pressed(1) || pressed(9)) back()
-            if (pressed(2) && kind === 'buy') run('autobuy')
-            if (pressed(3) && kind === 'buy') run('rebuy')
-            if (pressed(4)) switchTab(-1)
-            if (pressed(5)) switchTab(1)
-            if (pressed(12)) move(0, -1)
-            if (pressed(13)) move(0, 1)
-            if (pressed(14)) move(-1, 0)
-            if (pressed(15)) move(1, 0)
-            const [ax = 0, ay = 0] = pad.axes
-            if (Math.max(Math.abs(ax), Math.abs(ay)) > 0.6 && now - stickAt > 220) {
-                stickAt = now
-                if (Math.abs(ax) > Math.abs(ay)) move(Math.sign(ax), 0)
-                else move(0, Math.sign(ay))
-            }
-            prev = down
-            padSeen = true
-        }
-        requestAnimationFrame(pollPad)
+    let watching = false
+    function onPad(b: number) {
+        if (b === BTN.A) activate(selected)
+        else if (b === BTN.B || b === BTN.START) back()
+        else if (b === BTN.X && kind === 'buy') run('autobuy')
+        else if (b === BTN.Y && kind === 'buy') run('rebuy')
+        else if (b === BTN.LB) switchTab(-1)
+        else if (b === BTN.RB) switchTab(1)
+        else if (b === BTN.UP) move(0, -1)
+        else if (b === BTN.DOWN) move(0, 1)
+        else if (b === BTN.LEFT) move(-1, 0)
+        else if (b === BTN.RIGHT) move(1, 0)
     }
 
     return {

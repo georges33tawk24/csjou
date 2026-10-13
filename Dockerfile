@@ -52,6 +52,10 @@ RUN go build -o /xash ./src/server
 FROM --platform=$BUILDPLATFORM emscripten/emsdk:4.0.17 AS cswasm
 WORKDIR /cs
 COPY src/cs16-client .
+# The engine's own quit crashes the web build (it frees memory the next frame
+# still uses), so the menu's Quit asks the page to go back to the homepage instead.
+RUN sed -i 's|"quit\\n"|"echo JOUCS_MENU quit\\n"|' 3rdparty/mainui_cpp/menus/Main.cpp \
+    && grep -q 'JOUCS_MENU quit' 3rdparty/mainui_cpp/menus/Main.cpp
 RUN emcmake cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/cs/out \
     && cmake --build build -j"$(nproc)" --target install
 

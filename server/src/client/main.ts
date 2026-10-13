@@ -4,6 +4,7 @@ import xashURL from 'xash3d-fwgs/xash.wasm?url'
 import gl4esURL from 'xash3d-fwgs/libref_webgl2.wasm?url'
 import {Xash3DWebRTC} from "./webrtc"
 import {initMenus} from "./menus"
+import {applySettings, initSettings, loadSettings} from "./settings"
 
 type EngineConfig = {
     arguments: string[];
@@ -167,35 +168,6 @@ $('apply').addEventListener('click', async () => {
 
 // ---------- controller + fullscreen ----------
 
-// CS layout for gamepads (Xash's defaults are Half-Life's). Sticks: move / aim.
-// [engine key, command, button label, what it does]
-const CONTROLLER: [string, string, string, string][] = [
-    ['RTRIGGER', '+attack', 'RT', 'Shoot'],
-    ['LTRIGGER', '+attack2', 'LT', 'Scope / alt fire'],
-    ['R1_BUTTON', 'invnext', 'RB', 'Next weapon'],
-    ['L1_BUTTON', 'invprev', 'LB', 'Previous weapon'],
-    ['A_BUTTON', '+jump', 'A', 'Jump'],
-    ['B_BUTTON', '+duck', 'B', 'Crouch'],
-    ['X_BUTTON', '+reload', 'X', 'Reload'],
-    ['Y_BUTTON', '+use', 'Y', 'Use / defuse'],
-    ['STICK1', '+speed', 'Left stick click', 'Walk quietly'],
-    ['STICK2', 'slot3', 'Right stick click', 'Knife'],
-    ['DPAD_UP', 'buy', 'D-pad up', 'Open the shop'],
-    ['DPAD_DOWN', 'rebuy', 'D-pad down', 'Rebuy last round'],
-    ['DPAD_LEFT', 'slot1', 'D-pad left', 'Primary weapon · menu option 1 (e.g. Terrorists)'],
-    ['DPAD_RIGHT', 'slot2', 'D-pad right', 'Pistol · menu option 2 (e.g. Counter-Terrorists)'],
-    ['BACK', '+showscores', 'View / Back', 'Scoreboard'],
-    ['START', 'togglemenu', 'Menu / Options', 'Game menu and settings'],
-]
-
-$('controllerLayout').append(
-    ...[['Left stick', 'Move'], ['Right stick', 'Aim'], ...CONTROLLER.map(c => [c[2], c[3]])].map(([button, action]) => {
-        const row = document.createElement('tr')
-        row.append(Object.assign(document.createElement('th'), {textContent: button}),
-            Object.assign(document.createElement('td'), {textContent: action}))
-        return row
-    }))
-
 const fullscreen = $<HTMLInputElement>('fullscreen')
 fullscreen.checked = store.get('fullscreen', String(matchMedia('(hover: hover)').matches)) === 'true'
 fullscreen.addEventListener('change', () => store.set('fullscreen', String(fullscreen.checked)))
@@ -218,29 +190,44 @@ Object.assign(window, {joucsLog: engineLog})
 function keepLog(line: string) {
     engineLog.push(line)
     if (engineLog.length > 500) engineLog.shift()
-    // Quit in the game menu stops the engine; the frozen canvas would stay up.
-    // The engine writes config.cfg right after this line, so wait a tick.
-    if (line.includes('Issuing host shutdown')) setTimeout(backToHome, 0)
+    if (line.includes('Issuing host shutdown')) stopEngine()
+    if (line.includes('JOUCS_MENU quit')) setTimeout(backToHome, 0) // the game menu's Quit (patched at build)
     menus?.onLine(line)
+    settingsUi.onLine(line)
+}
+
+// Quit from the engine's own menu frees all engine memory, but the browser
+// keeps calling its frame loop and the next frame crashes on freed memory.
+let engineStopped = false
+function stopEngine() {
+    engineStopped = true
+    const em = engine?.em as { Module?: { pauseMainLoop?: () => void } } | undefined
+    em?.Module?.pauseMainLoop?.()
+    setTimeout(backToHome, 0) // the engine writes config.cfg right after this line
 }
 
 // The browser filesystem is wiped on every load, so keep the engine's
 // config.cfg (keybinds, sensitivity, video) in localStorage.
 const CONFIG_PATH = '/rodir/cstrike/config.cfg'
-const PAD_LAYOUT = '3' // bump to re-apply CONTROLLER binds over saved configs
 let engine: Xash3D | undefined
 let menus: ReturnType<typeof initMenus> | undefined
 
+const settingsUi = initSettings({
+    engine: () => engineStopped ? undefined : engine,
+    quitHome: backToHome,
+})
+$('openSettings').addEventListener('click', () => settingsUi.openSettings())
+
 function saveConfig(write: boolean) {
-    if (menus?.isOpen()) return // menus switch the controller off while open
+    if (menus?.isOpen() || settingsUi.isOpen()) return // these switch the controller off while open
     try {
-        if (write) engine!.Cmd_ExecuteString('host_writeconfig')
+        if (write && !engineStopped) engine!.Cmd_ExecuteString('host_writeconfig')
         store.set('engineConfig', new TextDecoder().decode(engine!.em!.FS.readFile(CONFIG_PATH)))
     } catch { /* engine not running yet */ }
 }
 
 function backToHome() {
-    saveConfig(false)
+    saveConfig(!engineStopped)
     window.removeEventListener('beforeunload', confirmLeave)
     location.reload()
 }
@@ -303,13 +290,8 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
     for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
     x.Cmd_ExecuteString('_vgui_menus 1') // server sends team/buy menus as VGUI, which open the JOUCS screens
     x.Cmd_ExecuteString('con_notifytime 0') // no console text over the game (chat and kill feed are HUD)
-    // apply the JOUCS controller layout once; after that, binds changed in
-    // Options > Controls are kept in the saved config
-    if (store.get('padLayout') !== PAD_LAYOUT) {
-        x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away
-        for (const [key, cmd] of CONTROLLER) x.Cmd_ExecuteString(`bind ${key} "${cmd}"`)
-        store.set('padLayout', PAD_LAYOUT)
-    }
+    x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away
+    applySettings(x, loadSettings()) // controller layout, sensitivity, video, audio
     setInterval(() => saveConfig(true), 30_000)
     document.addEventListener('visibilitychange', () => { if (document.hidden) saveConfig(true) })
     window.addEventListener('beforeunload', confirmLeave)

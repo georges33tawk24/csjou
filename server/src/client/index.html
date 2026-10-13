@@ -21,18 +21,19 @@
 
         * { box-sizing: border-box; }
 
-        html, body { height: 100%; }
+        html { background: var(--bg); }
 
         body {
             margin: 0;
-            background: radial-gradient(1200px 600px at 70% -10%, #2a2416 0%, transparent 60%), var(--bg);
+            min-height: 100vh;
+            background: radial-gradient(1200px 600px at 70% -10%, #2a2416 0%, transparent 60%) no-repeat, var(--bg);
             color: var(--text);
             font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
         }
 
         /* ---------- homepage ---------- */
         #home {
-            min-height: 100%;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -149,8 +150,31 @@
         .bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
         .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
 
-        footer { max-width: 460px; text-align: center; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
-        footer label { display: inline-flex; gap: 6px; align-items: center; justify-content: center; }
+        footer { width: 100%; max-width: 460px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 12px; }
+        footer label { display: inline-flex; gap: 6px; align-items: center; }
+        .toggles { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+        .pad { border-top: 0; padding-top: 0; text-align: left; }
+        .pad summary { text-align: center; }
+        .pad p { margin: 10px 0; }
+        .pad table { width: 100%; border-collapse: collapse; }
+        .pad th, .pad td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
+        .pad th { color: var(--text); white-space: nowrap; width: 40%; }
+
+        .fs {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 3;
+            padding: 8px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(13, 15, 12, 0.75);
+            color: var(--text);
+            font: inherit;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .fs[hidden] { display: none; }
 
         /* ---------- in game ---------- */
         #game { display: none; }
@@ -264,13 +288,21 @@
     </div>
 
     <footer>
-        <label><input type="checkbox" id="touchControls"> Touch controls</label>
-        <span>Controller: plug it in and press any button once the game starts.</span>
+        <div class="toggles">
+            <label><input type="checkbox" id="fullscreen"> Start in fullscreen</label>
+            <label><input type="checkbox" id="touchControls"> Touch controls</label>
+        </div>
+        <details class="pad">
+            <summary>Controller layout</summary>
+            <p>Plug in any Xbox or PlayStation style controller and press a button once the game starts.</p>
+            <table id="controllerLayout"></table>
+        </details>
     </footer>
 </main>
 
 <div id="game">
     <div id="logo">JOUCS</div>
+    <button id="fsButton" class="fs" hidden>Fullscreen</button>
     <canvas id="canvas"></canvas>
     <p id="warning">If it's not starting, try to enable microphone and refresh</p>
 </div>

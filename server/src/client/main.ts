@@ -164,6 +164,51 @@ $('apply').addEventListener('click', async () => {
     }
 })
 
+// ---------- controller + fullscreen ----------
+
+// CS layout for gamepads (Xash's defaults are Half-Life's). Sticks: move / aim.
+// [engine key, command, button label, what it does]
+const CONTROLLER: [string, string, string, string][] = [
+    ['RTRIGGER', '+attack', 'RT', 'Shoot'],
+    ['LTRIGGER', '+attack2', 'LT', 'Scope / alt fire'],
+    ['R1_BUTTON', 'invnext', 'RB', 'Next weapon'],
+    ['L1_BUTTON', 'invprev', 'LB', 'Previous weapon'],
+    ['A_BUTTON', '+jump', 'A', 'Jump'],
+    ['B_BUTTON', '+duck', 'B', 'Crouch'],
+    ['X_BUTTON', '+reload', 'X', 'Reload'],
+    ['Y_BUTTON', '+use', 'Y', 'Use / defuse'],
+    ['STICK1', '+speed', 'Left stick click', 'Walk quietly'],
+    ['STICK2', 'slot3', 'Right stick click', 'Knife'],
+    ['DPAD_UP', 'autobuy', 'D-pad up', 'Auto-buy'],
+    ['DPAD_DOWN', 'rebuy', 'D-pad down', 'Rebuy last round'],
+    ['DPAD_LEFT', 'slot1', 'D-pad left', 'Primary weapon · menu option 1'],
+    ['DPAD_RIGHT', 'slot2', 'D-pad right', 'Pistol · menu option 2'],
+    ['BACK', '+showscores', 'View / Back', 'Scoreboard'],
+    ['START', 'slot5', 'Menu / Start', 'Auto-pick team & skin · bomb'],
+]
+
+$('controllerLayout').append(
+    ...[['Left stick', 'Move'], ['Right stick', 'Aim'], ...CONTROLLER.map(c => [c[2], c[3]])].map(([button, action]) => {
+        const row = document.createElement('tr')
+        row.append(Object.assign(document.createElement('th'), {textContent: button}),
+            Object.assign(document.createElement('td'), {textContent: action}))
+        return row
+    }))
+
+const fullscreen = $<HTMLInputElement>('fullscreen')
+fullscreen.checked = store.get('fullscreen', String(matchMedia('(hover: hover)').matches)) === 'true'
+fullscreen.addEventListener('change', () => store.set('fullscreen', String(fullscreen.checked)))
+
+function enterFullscreen() {
+    document.documentElement.requestFullscreen?.({navigationUI: 'hide'}).catch(() => undefined)
+}
+const fsButton = $('fsButton')
+fsButton.hidden = !document.fullscreenEnabled
+fsButton.addEventListener('click', enterFullscreen)
+document.addEventListener('fullscreenchange', () => {
+    fsButton.hidden = !document.fullscreenEnabled || !!document.fullscreenElement
+})
+
 // ---------- starting the game ----------
 
 // last engine console lines, readable as window.joucsLog from devtools
@@ -183,6 +228,8 @@ function playerName() {
 async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> | void) {
     const name = playerName()
     clearInterval(statusTimer)
+    // still inside the click handler, so the browser allows fullscreen here
+    if (fullscreen.checked) enterFullscreen()
     document.body.classList.add('playing')
 
     const config = await configPromise
@@ -219,6 +266,8 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
     if (touchControls.checked) x.Cmd_ExecuteString('touch_enable 1')
     x.Cmd_ExecuteString(`name "${name}"`)
     for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
+    x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away (no confirm press)
+    for (const [key, cmd] of CONTROLLER) x.Cmd_ExecuteString(`bind ${key} "${cmd}"`)
     await afterStart(x)
 
     window.addEventListener('beforeunload', e => e.preventDefault())

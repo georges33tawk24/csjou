@@ -192,14 +192,16 @@ const showPasswordField = () => { $('hostPasswordField').hidden = hostAccess.val
 hostAccess.addEventListener('change', showPasswordField)
 showPasswordField()
 
+// the maps come from the game files, so until those are loaded the list says so
 function fillMaps() {
     for (const [select, key] of [[hostMap, 'hostMap'], [offMap, 'offMap']] as const) {
-        select.replaceChildren(...maps.map(m => new Option(m, m)))
+        select.replaceChildren(...maps.length ? maps.map(m => new Option(m, m)) : [new Option('Load the game files first (top of the page)', '')])
         select.value = store.get(key, 'de_dust2')
-        if (!select.value && maps.length) select.value = maps.includes('de_dust2') ? 'de_dust2' : maps[0]
+        if (!select.value) select.value = maps.includes('de_dust2') ? 'de_dust2' : maps[0] ?? ''
         select.onchange = () => store.set(key, select.value)
     }
 }
+fillMaps()
 
 // this browser's lobby code never changes, so an invite link keeps working
 let hostCode = store.get('lobbyCode')

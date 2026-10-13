@@ -28,7 +28,7 @@ WORKDIR /client
 COPY server/package.json server/package-lock.json server/vite.config.ts server/tsconfig.json ./
 RUN npm ci --no-audit --no-fund
 COPY server/src/client src/client
-RUN npx tsc --noEmit -p . && npx vite build
+RUN npx tsc --noEmit -p . && npm run check && npx vite build
 
 FROM scratch AS web
 COPY --from=client /client/src/client/dist /

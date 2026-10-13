@@ -3,22 +3,29 @@
 Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
 
 - **Host**: whoever creates a lobby runs the game server in their own browser and shares an invite
-  link or 6-character code. Pick the game mode (classic, team deathmatch, free-for-all, knife arena),
-  map, max players, bots and an optional password. From the pause menu the host can change map and
+  link or 6-character code. Pick the game mode (classic, co-op vs bots, team deathmatch, free-for-all,
+  Gun Game, knife arena), map, max players, bots and an optional password. From the pause menu the host can change map and
   mode, add or remove bots, change their skill and remove players.
-- **Join**: open the invite link. Friends connect straight to the host's browser (WebRTC through
-  PeerJS's free public service, which also relays traffic when a network blocks direct connections).
-  No router setup, no server to keep running.
+- **Join**: open the invite link, or pick the lobby from *Recent lobbies*. Friends connect straight to
+  the host's browser (WebRTC through PeerJS's free public service, which also relays traffic when a
+  network blocks direct connections). No router setup, no server to keep running. A friend whose
+  connection drops rejoins automatically and keeps their place.
+- **Extra maps**: load fan maps (.bsp, .wad or a .zip) on the homepage; a host sends them to friends.
 - **Offline**: the same game modes against bots, entirely in the browser; the pause menu pauses.
 - **Controller**: every action can be bound, a quick menu has drop, radio and chat, the right stick
   has a response curve, and aim assist (controller and touch only, never mouse) slows the view and
   pulls gently towards visible enemies.
 - **Voice chat** between the players of a lobby (WebRTC audio, push-to-talk or always on).
+- **Match stats**: kills, deaths, headshots and the MVP when a map ends (and from the pause menu),
+  the last match and all-time totals on the homepage.
+- **Controller vibration** on shots, hits, kills and deaths.
 - Touch controls on phones, a crosshair editor, and team, character and buy screens drawn from the
   game's own art.
 
 Deathmatch modes respawn you after a second with a pistol and armor; guns cost money, which you
-earn per kill ($750, start $1000). Classic keeps the normal CS economy.
+earn per kill ($750, start $1000). Classic keeps the normal CS economy. Co-op puts every human on
+the Counter-Terrorist side against bots. Gun Game: every kill gives you the next of 19 weapons; the
+first kill with the knife wins and the game restarts.
 
 ## Game files
 
@@ -37,7 +44,8 @@ Rebuilt from the MIT-licensed [webxash3d-fwgs](https://github.com/daShao999/WebX
 after the original repo, npm packages and Docker images were deleted. `fetch-sources.sh` pins the CS
 client and [ReGameDLL](https://github.com/rehlds/ReGameDLL_CS) (game logic and bots) versions it used;
 the engine comes from the `xash3d-fwgs` npm package. `patches/` holds the JOUCS changes to them: aim
-assist in the client, an `mp_kill_reward` setting, and bot map analysis that doesn't stall the game.
+assist and vibration events in the client; Gun Game (`mp_gungame`), an `mp_kill_reward` setting and
+bot map analysis that doesn't stall the game in ReGameDLL.
 
 ```bash
 ./fetch-sources.sh

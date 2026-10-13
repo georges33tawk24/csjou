@@ -406,6 +406,7 @@ type Session = { code: string; name: string; password: string; token: string; at
 
 /** while playing in someone's lobby: map/mode changes, being removed, and dropping out */
 function follow(l: Lobby, session: Session) {
+    Object.assign(window, {joucsLobby: l}) // for troubleshooting from devtools
     l.onInfo(info => {
         if (info.map !== current.map || info.mode !== current.mode) endOfMap()
         current = {map: info.map, mode: info.mode}

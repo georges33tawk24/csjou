@@ -1,5 +1,6 @@
 import Peer, {type DataConnection} from 'peerjs'
 import {ErrNoLocation, Net, type Packet} from 'xash3d-fwgs'
+import type {VoicePlayer} from './voice'
 
 // Lobbies run in the host's browser: their engine is a listen server and each
 // friend connects to it peer-to-peer (WebRTC). PeerJS's free public service
@@ -25,6 +26,8 @@ type Msg =
     | { t: 'join'; name: string; password: string; needFiles: boolean }
     | { t: 'welcome'; fileSize: number }
     | { t: 'reject'; reason: string }
+    | { t: 'voice'; on: boolean } // a friend turned voice chat on
+    | { t: 'roster'; players: VoicePlayer[] } // who has voice chat on
 
 const ID_PREFIX = 'joucs-'
 const CODE_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789' // no 0/o, 1/l/i
@@ -91,7 +94,7 @@ class HostNet extends Net {
     }
 }
 
-type Guest = { conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']; joined: boolean; name: string }
+type Guest = { conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']; joined: boolean; name: string; voice: boolean }
 
 export type HostOptions = {
     code: string
@@ -131,7 +134,7 @@ export async function hostLobby(opts: HostOptions) {
 
         conn.on('open', () => {
             const {game, files} = channels(conn)
-            guest = {conn, game, files, ip, joined: false, name: ''}
+            guest = {conn, game, files, ip, joined: false, name: '', voice: false}
             guests.set(key, guest)
             game.onmessage = e => {
                 if (guest?.joined) net.incoming.enqueue({ip, port: GUEST_PORT, data: new Int8Array(e.data as ArrayBuffer)})
@@ -141,6 +144,10 @@ export async function hostLobby(opts: HostOptions) {
             const msg = raw as Msg
             if (!guest) return
             if (msg.t === 'info') conn.send({t: 'info', ...info()} satisfies Msg)
+            if (msg.t === 'voice' && guest.joined) {
+                guest.voice = msg.on
+                sendRoster()
+            }
             if (msg.t !== 'join' || guest.joined) return
             const i = info()
             const reason = opts.password && msg.password !== opts.password ? 'Wrong lobby password.'
@@ -156,21 +163,45 @@ export async function hostLobby(opts: HostOptions) {
             conn.send({t: 'welcome', fileSize: data?.size ?? 0} satisfies Msg)
             if (data) sendFile(guest.files, data).catch(() => conn.close())
         })
-        conn.on('close', () => { if (guests.get(key)?.conn === conn) guests.delete(key) })
+        conn.on('close', () => {
+            if (guests.get(key)?.conn !== conn) return
+            guests.delete(key)
+            sendRoster()
+        })
         conn.on('error', () => conn.close())
     })
 
     const joined = () => [...guests.entries()].filter(([, g]) => g.joined)
+
+    // voice chat: who has it on, for everyone (the host included)
+    let hostVoice: VoicePlayer | undefined
+    let onRoster = (_players: VoicePlayer[]) => undefined as void
+    const roster = (): VoicePlayer[] => [
+        ...hostVoice ? [hostVoice] : [],
+        ...joined().filter(([, g]) => g.voice).map(([, g]) => ({id: g.conn.peer, name: g.name})),
+    ]
+    function sendRoster() {
+        const players = roster()
+        for (const [, g] of joined()) g.conn.send({t: 'roster', players} satisfies Msg)
+        onRoster(players)
+    }
     const close = () => peer.destroy()
     window.addEventListener('pagehide', close)
     return {
         net,
+        peer,
         close,
         guests: joinedCount,
         players: () => joined().map(([key, g]) => ({key, name: g.name})),
         /** tell friends' lobby screens about a new map or mode */
         broadcastInfo() {
             for (const [, g] of joined()) g.conn.send({t: 'info', ...info()} satisfies Msg)
+        },
+        /** the host's own voice chat */
+        voice(name: string, fn: (players: VoicePlayer[]) => void) {
+            hostVoice = {id: peer.id, name}
+            onRoster = fn
+            sendRoster()
         },
         kick(key: string) {
             const g = guests.get(key)
@@ -226,6 +257,7 @@ export async function findLobby(code: string) {
     // channel cleanly, so watch the connection itself as well
     let closedHandler = (_reason?: string) => undefined as void
     let infoHandler = (_info: LobbyInfo) => undefined as void
+    let rosterHandler = (_players: VoicePlayer[]) => undefined as void
     let joined = false
     conn.on('close', () => closedHandler())
     game.addEventListener('close', () => closedHandler())
@@ -237,6 +269,7 @@ export async function findLobby(code: string) {
         if (!joined) return
         if (m.t === 'reject') closedHandler(m.reason)
         if (m.t === 'info') infoHandler(m as unknown as LobbyInfo)
+        if (m.t === 'roster') rosterHandler(m.players)
     })
     peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect() })
 
@@ -281,6 +314,12 @@ export async function findLobby(code: string) {
 
         onClose(fn: (reason?: string) => void) { closedHandler = fn },
         onInfo(fn: (info: LobbyInfo) => void) { infoHandler = fn },
+        /** turn our voice chat on; fn gets everyone with voice on, now and on every change */
+        voice(fn: (players: VoicePlayer[]) => void) {
+            rosterHandler = fn
+            conn.send({t: 'voice', on: true} satisfies Msg)
+        },
+        peer,
         close() { peer.destroy() },
     }
 }

@@ -236,6 +236,19 @@
             pointer-events: none;
         }
 
+        .talkers {
+            position: fixed;
+            top: 140px;
+            left: 10px;
+            z-index: 3;
+            margin: 0;
+            color: var(--amber);
+            font: 13px/1.6 var(--font);
+            text-shadow: 0 1px 2px #000;
+            white-space: pre;
+            pointer-events: none;
+        }
+
         /* ---------- team / character / buy / quick screens ---------- */
         .menu { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.35); }
         .menu-panel {
@@ -516,7 +529,7 @@
             <label><input type="checkbox" id="fullscreen"> Start in fullscreen</label>
             <label><input type="checkbox" id="touchControls"> Touch controls</label>
         </div>
-        <button id="openSettings" class="secondary">Settings · controller, crosshair, mouse, video, audio</button>
+        <button id="openSettings" class="secondary">Settings · controller, aim assist, crosshair, voice chat, video</button>
         <p class="fine">Counter-Strike game files belong to Valve and never leave your devices: JOUCS keeps them in your browser and only sends them to friends who join your lobby.</p>
     </footer>
 </main>
@@ -527,6 +540,7 @@
     <div id="logo">JOUCS</div>
     <button id="fsButton" class="fs" hidden>Fullscreen</button>
     <p id="notice" class="notice" role="status" hidden></p>
+    <p id="talkers" class="talkers" aria-live="polite"></p>
     <div id="menu" class="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menuTitle">
         <div class="menu-panel">
             <header class="menu-head">

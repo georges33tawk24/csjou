@@ -4,13 +4,21 @@ Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
 
 - **Host**: whoever creates a lobby runs the game server in their own browser and shares an invite
   link or 6-character code. Pick the game mode (classic, team deathmatch, free-for-all, knife arena),
-  map, max players, bots and an optional password. The host can change map and mode from the pause menu.
+  map, max players, bots and an optional password. From the pause menu the host can change map and
+  mode, add or remove bots, change their skill and remove players.
 - **Join**: open the invite link. Friends connect straight to the host's browser (WebRTC through
   PeerJS's free public service, which also relays traffic when a network blocks direct connections).
   No router setup, no server to keep running.
-- **Offline**: the same game modes against bots, entirely in the browser.
-- Controller support for every action (remappable, plus a quick menu for drop, radio and chat), touch
-  controls on phones, crosshair editor, and the team, character and buy screens drawn from the game's art.
+- **Offline**: the same game modes against bots, entirely in the browser; the pause menu pauses.
+- **Controller**: every action can be bound, a quick menu has drop, radio and chat, the right stick
+  has a response curve, and aim assist (controller and touch only, never mouse) slows the view and
+  pulls gently towards visible enemies.
+- **Voice chat** between the players of a lobby (WebRTC audio, push-to-talk or always on).
+- Touch controls on phones, a crosshair editor, and team, character and buy screens drawn from the
+  game's own art.
+
+Deathmatch modes respawn you after a second with a pistol and armor; guns cost money, which you
+earn per kill ($750, start $1000). Classic keeps the normal CS economy.
 
 ## Game files
 
@@ -28,12 +36,13 @@ Bot navigation meshes (built in ~30 s the first time bots play a map) are kept t
 Rebuilt from the MIT-licensed [webxash3d-fwgs](https://github.com/daShao999/WebXash3D-Fwgs-yohimik)
 after the original repo, npm packages and Docker images were deleted. `fetch-sources.sh` pins the CS
 client and [ReGameDLL](https://github.com/rehlds/ReGameDLL_CS) (game logic and bots) versions it used;
-the engine comes from the `xash3d-fwgs` npm package.
+the engine comes from the `xash3d-fwgs` npm package. `patches/` holds the JOUCS changes to them: aim
+assist in the client, an `mp_kill_reward` setting, and bot map analysis that doesn't stall the game.
 
 ```bash
 ./fetch-sources.sh
 docker build --target web --output type=local,dest=page .
 ```
 
-`page/` is the whole site. GitHub Actions builds it on every push to `main` and publishes it to the
-`gh-pages` branch.
+`page/` is the whole site. GitHub Actions builds it on every push and publishes `main` to the
+`gh-pages` branch (the live site) and other branches to `page-<branch>` for testing.

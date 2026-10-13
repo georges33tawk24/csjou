@@ -8,6 +8,8 @@ import {CODE_RE, findLobby, hostLobby, type Lobby, type LobbyInfo, newLobbyCode}
 import {initMenus, menuBackground} from './menus'
 import {onPadActivity} from './pad'
 import {applySettings, initSettings, loadSettings, setInputDevice} from './settings'
+import {startVoice, type Voice, type VoicePlayer} from './voice'
+import type Peer from 'peerjs'
 
 const SKILLS = ['Easy', 'Normal', 'Hard', 'Expert']
 const MAP_RE = /^[a-z0-9_]+$/
@@ -49,6 +51,7 @@ const CLASSIC: Cvars = {
     mp_freeforall: 0, mp_respawn_immunitytime: 0, mp_give_player_c4: 1, mp_weapons_allow_map_placed: 1,
     mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
     mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0, mp_kill_reward: 300,
+    sv_alltalk: 1, // voice chat is a party chat: everyone hears everyone
     ...Object.fromEntries(BOT_WEAPONS.map(w => [`bot_allow_${w}`, 1])),
 }
 const DEATHMATCH: Cvars = {
@@ -321,6 +324,7 @@ $('joinBtn').addEventListener('click', async e => {
             x.Cmd_ExecuteString(`cl_aimassist_ffa ${lobbyInfo && isFfa(lobbyInfo) ? 1 : 0}`)
             x.Cmd_ExecuteString('connect 127.0.0.1:8080')
         })
+        startLobbyVoice(found.peer, fn => found.voice(fn))
     } catch (err) {
         joinMsg.textContent = (err as Error).message
         if (filesCard.dataset.state === 'busy') showFiles(zip ? 'ready' : 'missing', zip ? 'Game files ready' : MISSING)
@@ -371,6 +375,7 @@ $('hostBtn').addEventListener('click', async e => {
         hosting = {setup, lobby: lobbyHost}
         keepRunningWhenHidden()
         await launch(lobbyHost.net, x => startServer(x, setup))
+        startLobbyVoice(lobbyHost.peer, fn => lobbyHost.voice(playerName(), fn))
     } catch (err) {
         msg.className = 'msg err'
         msg.textContent = (err as Error).message
@@ -480,11 +485,46 @@ function setBots(n: number) {
     hosting.lobby.broadcastInfo()
 }
 
+// bots only take a new skill when they join, so swap them all
+function setSkill(n: number) {
+    if (!hosting || !engine) return
+    const s = hosting.setup
+    s.skill = clamp(n, 0, 3)
+    writeServerConfig(engine, s)
+    engine.Cmd_ExecuteString(`bot_difficulty ${s.skill}`)
+    engine.Cmd_ExecuteString('bot_kick')
+    engine.Cmd_ExecuteString(`bot_quota ${s.bots}`)
+}
+
 function kick(key: string) {
     const player = hosting?.lobby.players().find(p => p.key === key)
     if (!player) return
     hosting!.lobby.kick(key)
     engine?.Cmd_ExecuteString(`kick "${cleanName(player.name, '')}"`)
+}
+
+// ---------- voice chat (lobbies) ----------
+
+let voice: Voice | undefined
+
+async function startLobbyVoice(peer: Peer, join: (onPlayers: (players: VoicePlayer[]) => void) => void) {
+    const s = loadSettings()
+    if (s.voice === 'off') return
+    try {
+        voice = await startVoice(peer, s.voice, s.volume)
+    } catch {
+        showNotice('Voice chat is off: this browser did not allow the microphone.')
+        setTimeout(() => showNotice(''), 8000)
+        return
+    }
+    Object.assign(window, {joucsVoice: voice}) // for troubleshooting from devtools
+    join(players => voice?.setRoster(players))
+    // who is talking, under the radar
+    setInterval(() => {
+        const names = voice?.speaking() ?? []
+        if (s.voice === 'push' && voice?.talking()) names.unshift('You')
+        $('talkers').textContent = names.map(n => `🔊 ${n}`).join('\n')
+    }, 250)
 }
 
 // offline, the pause menu really pauses (bots included)
@@ -523,6 +563,8 @@ function keepLog(line: string) {
     if (line.includes('JOUCS_MENU team') && touchControls.checked) {
         setTimeout(() => engine?.Cmd_ExecuteString('touch_setcommand touch_edit joucs_pause'), 0)
     }
+    const talk = /JOUCS_TALK ([01])/.exec(line) // the talk button (settings.ts aliases)
+    if (talk) voice?.talk(talk[1] === '1')
     menus?.onLine(line)
     settingsUi.onLine(line)
 }
@@ -560,6 +602,9 @@ const settingsUi = initSettings({
         change: changeMap,
         bots: hosting.setup.bots,
         setBots,
+        skills: SKILLS,
+        skill: hosting.setup.skill,
+        setSkill,
         players: hosting.lobby.players(),
         kick,
     },

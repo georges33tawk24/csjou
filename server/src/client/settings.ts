@@ -30,6 +30,7 @@ export type Settings = {
     crossDot: boolean
     crossT: boolean
     crossDynamic: boolean
+    voice: 'off' | 'push' | 'open' // voice chat: off, hold a button to talk, always on
     pad: Record<string, string> // action id -> engine key name ('' = none)
 }
 
@@ -69,6 +70,7 @@ const ACTIONS: Action[] = [
     {id: 'light', label: 'Flashlight', cmd: 'impulse 100', key: ''},
     {id: 'spray', label: 'Spray logo', cmd: 'impulse 201', key: ''},
     {id: 'team', label: 'Change team', cmd: 'chooseteam', key: ''},
+    {id: 'talk', label: 'Talk (hold, when voice chat is on)', cmd: '+joucs_talk', key: ''},
 ]
 
 // index = standard Gamepad API button; these are the engine's names for them
@@ -90,6 +92,7 @@ const DEFAULTS: Omit<Settings, 'pad'> = {
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
+    voice: 'off',
 }
 
 export function loadSettings(): Settings {
@@ -130,6 +133,11 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
         `cl_showfps ${s.showFps ? 1 : 0}`,
         `volume ${s.volume}`,
         `MP3Volume ${s.music}`,
+        // voice chat runs in the page (voice.ts); the engine's own would ask for the microphone
+        'voice_enable 0',
+        'alias +joucs_talk "echo JOUCS_TALK 1"',
+        'alias -joucs_talk "echo JOUCS_TALK 0"',
+        'bind k "+joucs_talk"',
         // classic CS crosshair, and the client's custom one (xhair_*)
         `cl_crosshair_color "${r} ${g} ${b}"`,
         `cl_crosshair_size ${s.crossClassicSize}`,
@@ -188,7 +196,7 @@ export function setInputDevice(x: Xash3D, device: InputDevice) {
 // is closed and the button that closed it is up. (joy_enable can't be used:
 // the engine locks it while connected.)
 
-const HELD = ['attack', 'attack2', 'jump', 'duck', 'reload', 'use', 'speed', 'showscores']
+const HELD = ['attack', 'attack2', 'jump', 'duck', 'reload', 'use', 'speed', 'showscores', 'joucs_talk']
 const openScreens = new Set<string>()
 
 export function screenOpen(x: Xash3D | undefined, screen: string, open: boolean) {
@@ -291,6 +299,9 @@ export type HostPanel = {
     change: (map: string, mode: string) => void
     bots: number
     setBots: (n: number) => void
+    skills: string[]
+    skill: number
+    setSkill: (n: number) => void
     players: { key: string; name: string }[]
     kick: (key: string) => void
 }
@@ -357,7 +368,7 @@ export function initSettings(hooks: Hooks) {
         return row(label, input)
     }
 
-    function choice<K extends 'crossStyle' | 'crossClassicSize'>(label: string, key: K, options: [Settings[K], string][], rerender = false) {
+    function choice<K extends 'crossStyle' | 'crossClassicSize' | 'voice'>(label: string, key: K, options: [Settings[K], string][], rerender = false) {
         const sel = el('select')
         sel.dataset.id = key
         sel.append(...options.map(([v, l]) => new Option(l, v)))
@@ -451,7 +462,11 @@ export function initSettings(hooks: Hooks) {
             toggle('Invert mouse', 'invertMouse'),
             el('p', {className: 'msg', textContent: 'Keyboard keys: Pause menu → Game menu → Configuration → Controls.'}),
         ]],
-        ['Video & audio', () => [
+        ['Audio, voice & video', () => [
+            choice('Voice chat with friends in a lobby (uses your microphone)', 'voice',
+                [['off', 'Off'], ['push', 'Hold a button to talk'], ['open', 'Always on']]),
+            el('p', {className: 'msg', textContent: 'Hold to talk: K on the keyboard, or pick a controller button for "Talk" in Controller → Buttons. ' +
+                    'Your browser asks for the microphone the first time.'}),
             range('Brightness', 'brightness', 0, 2, 0.05, v => v.toFixed(2)),
             toggle('Show FPS', 'showFps'),
             range('Volume', 'volume', 0, 1, 0.05, v => `${Math.round(v * 100)}%`),
@@ -472,6 +487,10 @@ export function initSettings(hooks: Hooks) {
         map.dataset.id = 'host-map'
         map.append(...h.maps.map(m => new Option(m, m)))
         map.value = h.map
+        const skillSelect = withId(el('select', {title: 'Bot skill'}), 'host-skill')
+        skillSelect.append(...h.skills.map((name, i) => new Option(`${name} bots`, String(i))))
+        skillSelect.value = String(h.skill)
+        skillSelect.addEventListener('change', () => h.setSkill(Number(skillSelect.value)))
         const mode = el('select')
         mode.dataset.id = 'host-mode'
         mode.append(...h.modes.map(([id, label]) => new Option(label, id)))
@@ -486,7 +505,8 @@ export function initSettings(hooks: Hooks) {
             el('div', {className: 'host-change'},
                 el('span', {className: 'host-label', textContent: `Bots: ${h.bots}`}),
                 withId(button('− Remove a bot', () => { h.setBots(h.bots - 1); render('bots-less') }), 'bots-less'),
-                withId(button('+ Add a bot', () => { h.setBots(h.bots + 1); render('bots-more') }), 'bots-more')),
+                withId(button('+ Add a bot', () => { h.setBots(h.bots + 1); render('bots-more') }), 'bots-more'),
+                skillSelect),
             ...h.players.map(p => el('div', {className: 'host-change'},
                 el('span', {className: 'host-label', textContent: p.name || 'Friend'}),
                 button('Remove from lobby', () => { h.kick(p.key); render() }))),

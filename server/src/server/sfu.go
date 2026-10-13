@@ -620,6 +620,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !disabledXPoweredBy {
 		w.Header().Set("X-Powered-By", xPoweredByValue)
 	}
+	if handleAPI(w, r) {
+		return
+	}
 	switch r.URL.Path {
 	case "/websocket":
 		websocketHandler(w, r)

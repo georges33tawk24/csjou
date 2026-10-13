@@ -69,6 +69,9 @@ COPY --from=engine /xash/build/filesystem/filesystem_stdio.so ./
 COPY --from=engine /cs/out/ ./
 COPY server/configs/valve valve
 COPY server/configs/cstrike cstrike
+# bot names/skills for ReGameDLL's built-in bots
+COPY src/cs16-client/3rdparty/cs16client-extras/BotProfile.db \
+     src/cs16-client/3rdparty/cs16client-extras/BotChatter.db cstrike/
 COPY --from=client /client/src/client/dist ./public
 COPY --from=cswasm /cs/out/cstrike ./public/cstrike
 COPY --from=client /client/node_modules/xash3d-fwgs/dist/filesystem_stdio.wasm ./public/filesystem_stdio.wasm
@@ -91,4 +94,4 @@ ENV XASH3D_BASEDIR=/xashds \
 
 EXPOSE 27016/tcp 27018/udp
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["+map", "de_dust2", "+maxplayers", "4"]
+CMD ["+map", "de_dust2", "+maxplayers", "16", "+bot_join_after_player", "0", "+bot_quota_mode", "normal", "+bot_difficulty", "1", "+bot_quota", "0"]

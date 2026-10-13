@@ -123,17 +123,12 @@
         .primary:hover { filter: brightness(1.08); }
         .primary:disabled { opacity: 0.5; cursor: progress; }
 
-        .status {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            border-radius: 8px;
-            background: #0f110e;
-            color: var(--muted);
-            font-size: 14px;
-        }
-
+        .lobby { padding: 12px 14px; border-radius: 10px; background: #0f110e; display: flex; flex-direction: column; gap: 4px; }
+        .lobby-head { display: flex; align-items: center; gap: 10px; }
+        .lobby-head strong { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lobby-info { color: var(--muted); font-size: 14px; padding-left: 18px; }
+        .lock { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--accent); }
+        .lock[hidden] { display: none; }
         .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
         .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 
@@ -360,23 +355,50 @@
         </div>
 
         <section id="online" class="panel" role="tabpanel">
-            <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Checking server…</span></div>
-            <button id="join" class="primary">Join server</button>
+            <div class="lobby">
+                <div class="lobby-head">
+                    <span id="statusDot" class="dot"></span>
+                    <strong id="lobbyName">Checking the lobby…</strong>
+                    <span id="lobbyLock" class="lock" hidden>Private</span>
+                </div>
+                <div id="statusText" class="lobby-info"></div>
+            </div>
+            <label id="joinPasswordField" class="field" hidden>Lobby password
+                <input id="joinPassword" type="password" maxlength="24" autocomplete="off">
+            </label>
+            <p id="joinMsg" class="msg err" role="alert"></p>
+            <button id="join" class="primary">Join lobby</button>
 
             <details id="hostBox">
-                <summary>Host controls</summary>
+                <summary>Create lobby (host)</summary>
                 <div class="panel">
-                    <label class="field">Host password
-                        <input id="hostPassword" type="password" autocomplete="current-password">
+                    <label class="field">Lobby name
+                        <input id="lobbyNameInput" type="text" maxlength="32" placeholder="JOUCS">
                     </label>
                     <div class="row">
                         <label class="field">Map <select id="hostMap"></select></label>
                         <label class="field">Bot skill <select id="hostDifficulty"></select></label>
                     </div>
+                    <label class="field">Max players
+                        <span class="range"><input id="hostMax" type="range" min="2" max="32" value="16"><output id="hostMaxOut">16</output></span>
+                    </label>
                     <label class="field">Bots
                         <span class="range"><input id="hostBots" type="range" min="0" max="12" value="0"><output id="hostBotsOut">0</output></span>
                     </label>
-                    <button id="apply" class="primary">Apply to server</button>
+                    <label class="field">Who can join
+                        <select id="hostVisibility">
+                            <option value="public">Public: anyone with the link</option>
+                            <option value="private">Private: needs a lobby password</option>
+                        </select>
+                    </label>
+                    <label id="lobbyPasswordField" class="field" hidden>Lobby password (letters, numbers, - or _)
+                        <input id="lobbyPasswordInput" type="text" maxlength="24" autocomplete="off">
+                    </label>
+                    <label class="field">Host password
+                        <input id="hostPassword" type="password" autocomplete="current-password">
+                    </label>
+                    <p class="msg">Changing max players restarts the map; players reconnect automatically.</p>
+                    <button id="apply" class="primary">Create lobby</button>
                     <p id="hostMsg" class="msg" role="status"></p>
                 </div>
             </details>

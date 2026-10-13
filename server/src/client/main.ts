@@ -15,7 +15,9 @@ type EngineConfig = {
     files_map: Record<string, string>;
 }
 
-type ServerState = { map: string; bots: number; difficulty: number; players: number }
+type ServerState = {
+    name: string; map: string; maxPlayers: number; bots: number; difficulty: number; private: boolean; players: number
+}
 
 const SKILLS = ['Easy', 'Normal', 'Hard', 'Expert']
 const MAP_RE = /^[a-z0-9_]+$/
@@ -90,6 +92,13 @@ function bindRange(id: string) {
 }
 const offBots = bindRange('offBots')
 const hostBots = bindRange('hostBots')
+const hostMax = bindRange('hostMax')
+// bots take player slots, so keep at least one free for a human
+function limitBots() {
+    hostBots.input.max = String(Math.min(12, Number(hostMax.input.value) - 1))
+    hostBots.sync()
+}
+hostMax.input.addEventListener('input', limitBots)
 
 for (const id of ['offDifficulty', 'hostDifficulty']) {
     $(id).append(...SKILLS.map((s, i) => new Option(s, String(i))))
@@ -101,6 +110,14 @@ const hostMap = $<HTMLSelectElement>('hostMap')
 const hostDifficulty = $<HTMLSelectElement>('hostDifficulty')
 const hostPassword = $<HTMLInputElement>('hostPassword')
 hostPassword.value = store.get('hostPassword')
+const lobbyNameInput = $<HTMLInputElement>('lobbyNameInput')
+const hostVisibility = $<HTMLSelectElement>('hostVisibility')
+const lobbyPasswordInput = $<HTMLInputElement>('lobbyPasswordInput')
+const joinPassword = $<HTMLInputElement>('joinPassword')
+joinPassword.value = store.get('joinPassword')
+const PASSWORD_RE = /^[A-Za-z0-9_-]{1,24}$/
+const showLobbyPassword = () => { $('lobbyPasswordField').hidden = hostVisibility.value !== 'private' }
+hostVisibility.addEventListener('change', showLobbyPassword)
 
 offBots.input.value = store.get('offBots', '6')
 offBots.sync()
@@ -117,23 +134,41 @@ fetch('/api/maps').then(r => r.json()).then((maps: { name: string; nav: boolean 
 })
 
 let hostTouched = false
-for (const el of [hostMap, hostDifficulty, hostBots.input]) el.addEventListener('input', () => { hostTouched = true })
+for (const el of [lobbyNameInput, hostMap, hostDifficulty, hostMax.input, hostBots.input, hostVisibility, lobbyPasswordInput]) {
+    el.addEventListener('input', () => { hostTouched = true })
+}
+
+let lobby: ServerState | undefined
 
 async function refreshStatus() {
     try {
         const s: ServerState = await fetch('/api/status').then(r => r.json())
+        lobby = s
         $('statusDot').classList.add('on')
-        $('statusText').textContent =
-            `${s.map} · ${s.bots} bot${s.bots === 1 ? '' : 's'} (${SKILLS[s.difficulty] ?? '?'}) · ${s.players} online`
+        $('lobbyName').textContent = s.name
+        $('lobbyLock').hidden = !s.private
+        $('joinPasswordField').hidden = !s.private
+        $('statusText').textContent = `${s.map} · ${s.players}/${s.maxPlayers} players · ` +
+            `${s.bots} bot${s.bots === 1 ? '' : 's'} (${SKILLS[s.difficulty] ?? '?'})`
         if (!hostTouched) {
+            lobbyNameInput.value = s.name
             hostMap.value = s.map
             hostDifficulty.value = String(s.difficulty)
+            hostMax.input.value = String(s.maxPlayers)
+            hostMax.sync()
+            limitBots()
             hostBots.input.value = String(s.bots)
             hostBots.sync()
+            hostVisibility.value = s.private ? 'private' : 'public'
+            lobbyPasswordInput.placeholder = s.private ? 'leave empty to keep the current one' : ''
+            showLobbyPassword()
         }
     } catch {
+        lobby = undefined
         $('statusDot').classList.remove('on')
-        $('statusText').textContent = 'Server is offline'
+        $('lobbyName').textContent = 'Lobby is offline'
+        $('lobbyLock').hidden = true
+        $('statusText').textContent = 'The host has not started the server.'
     }
 }
 refreshStatus()
@@ -141,8 +176,15 @@ const statusTimer = setInterval(refreshStatus, 5000)
 
 $('apply').addEventListener('click', async () => {
     const msg = $('hostMsg')
+    const isPrivate = hostVisibility.value === 'private'
+    const pw = lobbyPasswordInput.value.trim()
+    if (isPrivate && pw && !PASSWORD_RE.test(pw)) {
+        msg.className = 'msg err'
+        msg.textContent = 'Lobby password: 1–24 letters, numbers, - or _'
+        return
+    }
     msg.className = 'msg'
-    msg.textContent = 'Applying…'
+    msg.textContent = 'Creating the lobby…'
     store.set('hostPassword', hostPassword.value)
     try {
         const res = await fetch('/api/server', {
@@ -150,21 +192,39 @@ $('apply').addEventListener('click', async () => {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 password: hostPassword.value,
+                name: lobbyNameInput.value.trim(),
                 map: hostMap.value,
+                maxPlayers: Number(hostMax.input.value),
                 bots: Number(hostBots.input.value),
                 difficulty: Number(hostDifficulty.value),
+                private: isPrivate,
+                lobbyPassword: isPrivate ? pw : '',
             }),
         })
         if (!res.ok) throw new Error((await res.text()).trim())
+        const s: ServerState = await res.json()
         hostTouched = false
+        lobbyPasswordInput.value = ''
+        if (isPrivate && pw) { joinPassword.value = pw; store.set('joinPassword', pw) } // the host joins too
         msg.className = 'msg ok'
-        msg.textContent = 'Server updated. A map change takes a few seconds.'
+        msg.textContent = `Lobby "${s.name}" is ready${s.private ? ' (private)' : ''}. A map change takes a few seconds.`
         refreshStatus()
     } catch (e) {
         msg.className = 'msg err'
         msg.textContent = (e as Error).message || 'Could not reach the server'
     }
 })
+
+// a join that failed (wrong password, full lobby) reloads the page; say why
+let joinError: string | null = null
+try {
+    joinError = sessionStorage.getItem('joucsError')
+    sessionStorage.removeItem('joucsError')
+} catch { /* storage blocked */ }
+if (joinError) {
+    selectTab(false)
+    $('joinMsg').textContent = joinError
+}
 
 // ---------- controller + fullscreen ----------
 
@@ -192,6 +252,8 @@ function keepLog(line: string) {
     if (engineLog.length > 500) engineLog.shift()
     if (line.includes('Issuing host shutdown')) stopEngine()
     if (line.includes('JOUCS_MENU quit')) setTimeout(backToHome, 0) // the game menu's Quit (patched at build)
+    if (line.includes('invalid password')) setTimeout(() => backToHome('Wrong lobby password.'), 0)
+    if (line.includes('server is full')) setTimeout(() => backToHome('This lobby is full.'), 0)
     // The touch layout loads while connecting, so retarget its gear (edit) button once the
     // team screen shows: it opens the JOUCS pause screen, which has "Edit touch layout".
     if (line.includes('JOUCS_MENU team') && touchControls.checked) {
@@ -233,7 +295,8 @@ function saveConfig(write: boolean) {
     } catch { /* engine not running yet */ }
 }
 
-function backToHome() {
+function backToHome(error?: string) {
+    try { if (error) sessionStorage.setItem('joucsError', error) } catch { /* storage blocked */ }
     saveConfig(!engineStopped)
     window.removeEventListener('beforeunload', confirmLeave)
     location.reload()
@@ -309,7 +372,20 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
 }
 
 $('join').addEventListener('click', () => {
-    launch(true, x => x.Cmd_ExecuteString('connect 127.0.0.1:8080'))
+    let pw = ''
+    if (lobby?.private) {
+        pw = joinPassword.value.trim()
+        if (!PASSWORD_RE.test(pw)) {
+            $('joinMsg').textContent = 'Enter the lobby password (ask the host).'
+            joinPassword.focus()
+            return
+        }
+        store.set('joinPassword', pw)
+    }
+    launch(true, x => {
+        x.Cmd_ExecuteString(`password "${pw}"`) // sent with the connection request
+        x.Cmd_ExecuteString('connect 127.0.0.1:8080')
+    })
 })
 
 $('playOffline').addEventListener('click', () => {

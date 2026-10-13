@@ -16,23 +16,28 @@ import (
 	"syscall"
 )
 
-// JOUCS host controls. Console commands are written to the engine's stdin,
-// which the dedicated server reads every frame on its own thread.
+// JOUCS lobby / host controls. Console commands are written to the engine's
+// stdin, which the dedicated server reads every frame on its own thread.
 
 type serverState struct {
+	Name       string `json:"name"`
 	Map        string `json:"map"`
+	MaxPlayers int    `json:"maxPlayers"`
 	Bots       int    `json:"bots"`
 	Difficulty int    `json:"difficulty"`
+	Private    bool   `json:"private"` // the password itself is never sent out
 	Players    int    `json:"players"`
 }
 
 const maxBots = 12
 
 var (
-	stateMu sync.Mutex
-	state   = serverState{Map: "de_dust2", Difficulty: 1}
-	console *os.File
-	mapRe   = regexp.MustCompile(`^[a-z0-9_]+$`)
+	stateMu       sync.Mutex
+	state         = serverState{Name: "JOUCS", Map: "de_dust2", MaxPlayers: 16, Difficulty: 1}
+	lobbyPassword string
+	console       *os.File
+	mapRe         = regexp.MustCompile(`^[a-z0-9_]+$`)
+	passwordRe    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,24}$`)
 )
 
 // initConsole replaces stdin with a pipe we control and reads the launch
@@ -55,6 +60,8 @@ func initConsole() {
 			state.Bots, _ = strconv.Atoi(v)
 		case "+bot_difficulty":
 			state.Difficulty, _ = strconv.Atoi(v)
+		case "+maxplayers":
+			state.MaxPlayers, _ = strconv.Atoi(v)
 		}
 	}
 }
@@ -169,10 +176,14 @@ func applySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Password   string `json:"password"`
-		Map        string `json:"map"`
-		Bots       int    `json:"bots"`
-		Difficulty int    `json:"difficulty"`
+		Password      string `json:"password"` // host password
+		Name          string `json:"name"`
+		Map           string `json:"map"`
+		MaxPlayers    int    `json:"maxPlayers"`
+		Bots          int    `json:"bots"`
+		Difficulty    int    `json:"difficulty"`
+		Private       bool   `json:"private"`
+		LobbyPassword string `json:"lobbyPassword"` // empty keeps the current one
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -188,8 +199,25 @@ func applySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// validated values are the only thing that reaches the console
-	if !mapRe.MatchString(req.Map) || req.Bots < 0 || req.Bots > maxBots || req.Difficulty < 0 || req.Difficulty > 3 {
+	name := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < ' ' || strings.ContainsRune(`";\\`, r) {
+			return -1
+		}
+		return r
+	}, req.Name))
+	if name == "" {
+		name = "JOUCS"
+	}
+	if r := []rune(name); len(r) > 32 {
+		name = string(r[:32])
+	}
+	if !mapRe.MatchString(req.Map) || req.MaxPlayers < 2 || req.MaxPlayers > 32 ||
+		req.Bots < 0 || req.Bots > maxBots || req.Bots >= req.MaxPlayers || req.Difficulty < 0 || req.Difficulty > 3 {
 		http.Error(w, "invalid settings", http.StatusBadRequest)
+		return
+	}
+	if req.LobbyPassword != "" && !passwordRe.MatchString(req.LobbyPassword) {
+		http.Error(w, "lobby password: 1-24 letters, numbers, - or _", http.StatusBadRequest)
 		return
 	}
 	if _, err := os.Stat("cstrike/maps/" + req.Map + ".bsp"); err != nil {
@@ -199,18 +227,38 @@ func applySettings(w http.ResponseWriter, r *http.Request) {
 
 	stateMu.Lock()
 	defer stateMu.Unlock()
-	cmds := []string{"bot_difficulty " + strconv.Itoa(req.Difficulty)}
+	pw := ""
+	if req.Private {
+		pw = req.LobbyPassword
+		if pw == "" {
+			pw = lobbyPassword
+		}
+		if pw == "" {
+			http.Error(w, "set a lobby password for a private lobby", http.StatusBadRequest)
+			return
+		}
+	}
+	cmds := []string{
+		`hostname "` + name + `"`,
+		`sv_password "` + pw + `"`,
+		"bot_difficulty " + strconv.Itoa(req.Difficulty),
+	}
 	if req.Difficulty != state.Difficulty {
 		cmds = append(cmds, "bot_kick") // quota re-adds them at the new difficulty
 	}
 	cmds = append(cmds, "bot_quota "+strconv.Itoa(req.Bots))
-	if req.Map != state.Map {
+	if req.MaxPlayers != state.MaxPlayers {
+		// player slots only change when the map restarts; everyone has to rejoin
+		cmds = append(cmds, "maxplayers "+strconv.Itoa(req.MaxPlayers), "map "+req.Map)
+	} else if req.Map != state.Map {
 		cmds = append(cmds, "changelevel "+req.Map)
 	}
 	if _, err := console.WriteString(strings.Join(cmds, "\n") + "\n"); err != nil {
 		http.Error(w, "server console unavailable", http.StatusInternalServerError)
 		return
 	}
-	state.Map, state.Bots, state.Difficulty = req.Map, req.Bots, req.Difficulty
+	lobbyPassword = pw
+	state.Name, state.Map, state.MaxPlayers = name, req.Map, req.MaxPlayers
+	state.Bots, state.Difficulty, state.Private = req.Bots, req.Difficulty, pw != ""
 	writeJSON(w, state)
 }

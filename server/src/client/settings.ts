@@ -122,6 +122,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEl
 type Hooks = {
     engine: () => Xash3D | undefined // undefined on the homepage
     quitHome: () => void
+    touch: () => boolean
+    enterFullscreen: () => void
 }
 
 export function initSettings(hooks: Hooks) {
@@ -230,6 +232,14 @@ export function initSettings(hooks: Hooks) {
         if (inGame) {
             items.push(
                 ['Change team', () => { close(); hooks.engine()?.Cmd_ExecuteString('chooseteam') }],
+            )
+            if (hooks.touch()) {
+                items.push(['Edit touch layout', () => { close(false); hooks.engine()?.Cmd_ExecuteString('touch_enableedit') }])
+                if (document.fullscreenEnabled && !document.fullscreenElement) {
+                    items.push(['Fullscreen', () => { hooks.enterFullscreen(); close(false) }])
+                }
+            }
+            items.push(
                 ['Game menu (advanced)', () => { gameMenuOpen = true; close(false); hooks.engine()?.Cmd_ExecuteString('togglemenu') }],
                 ['Quit to JOUCS home', () => { close(false); hooks.quitHome() }],
             )
@@ -392,6 +402,7 @@ export function initSettings(hooks: Hooks) {
     return {
         isOpen: () => !!view,
         openSettings: () => { fromPause = false; show('settings') },
+        openPause: () => show('pause'),
         onLine(line: string) {
             if (!line.includes('JOUCS_MENU pause')) return
             setTimeout(() => {

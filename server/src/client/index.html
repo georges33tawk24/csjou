@@ -291,6 +291,17 @@
         .settings-body > .secondary { align-self: flex-start; margin-top: 14px; }
         .pause-list { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
         .pause-list .secondary { text-align: left; padding: 14px 16px; font-size: 16px; }
+        /* phones in landscape: fit more on screen; controller hints don't apply to touch */
+        @media (max-height: 500px) {
+            .menu { padding: 8px; }
+            .menu-panel { max-height: calc(100vh - 16px); }
+            .menu-head { padding: 12px 16px 0; }
+            .menu-grid { padding: 10px 16px; }
+            .pause-list { gap: 6px; }
+            .pause-list .secondary { padding: 9px 14px; font-size: 15px; }
+            .menu-foot { padding: 8px 16px 10px; }
+        }
+        @media (hover: none) { .menu-foot > span { display: none; } }
 
 
         /* ---------- in game ---------- */

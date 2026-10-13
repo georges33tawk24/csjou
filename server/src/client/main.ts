@@ -192,6 +192,11 @@ function keepLog(line: string) {
     if (engineLog.length > 500) engineLog.shift()
     if (line.includes('Issuing host shutdown')) stopEngine()
     if (line.includes('JOUCS_MENU quit')) setTimeout(backToHome, 0) // the game menu's Quit (patched at build)
+    // The touch layout loads while connecting, so retarget its gear (edit) button once the
+    // team screen shows: it opens the JOUCS pause screen, which has "Edit touch layout".
+    if (line.includes('JOUCS_MENU team') && touchControls.checked) {
+        setTimeout(() => engine?.Cmd_ExecuteString('touch_setcommand touch_edit joucs_pause'), 0)
+    }
     menus?.onLine(line)
     settingsUi.onLine(line)
 }
@@ -215,6 +220,8 @@ let menus: ReturnType<typeof initMenus> | undefined
 const settingsUi = initSettings({
     engine: () => engineStopped ? undefined : engine,
     quitHome: backToHome,
+    touch: () => touchControls.checked,
+    enterFullscreen,
 })
 $('openSettings').addEventListener('click', () => settingsUi.openSettings())
 
@@ -285,7 +292,10 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
 
     $('logo').classList.add('done')
     x.main()
-    if (touchControls.checked) x.Cmd_ExecuteString('touch_enable 1')
+    if (touchControls.checked) {
+        x.Cmd_ExecuteString('touch_enable 1')
+        fsButton.remove() // it would cover touch buttons; Fullscreen is in the pause screen instead
+    }
     x.Cmd_ExecuteString(`name "${name}"`)
     for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
     x.Cmd_ExecuteString('_vgui_menus 1') // server sends team/buy menus as VGUI, which open the JOUCS screens

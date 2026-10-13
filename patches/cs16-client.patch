@@ -28,10 +28,10 @@ index 036da3f..1d72bb1 100644
  }
 diff --git a/cl_dll/input/joucs_aimassist.cpp b/cl_dll/input/joucs_aimassist.cpp
 new file mode 100644
-index 0000000..c2265e7
+index 0000000..2368861
 --- /dev/null
 +++ b/cl_dll/input/joucs_aimassist.cpp
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,147 @@
 +// JOUCS aim assist for controller and touch players.
 +//
 +// The page sets cl_aimassist (0 = off ... 1 = strongest) only while a
@@ -49,6 +49,11 @@ index 0000000..c2265e7
 +#include "pm_defs.h"
 +#include "event_api.h"
 +#include <math.h>
++
++#ifndef PITCH
++#define PITCH 0
++#define YAW 1
++#endif
 +
 +bool CL_IsDead();
 +

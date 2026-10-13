@@ -14,9 +14,11 @@ RUN sed -i 's|"quit\\n"|"echo JOUCS_MENU quit\\n"|' 3rdparty/mainui_cpp/menus/Ma
     && grep -q 'JOUCS_MENU quit' 3rdparty/mainui_cpp/menus/Main.cpp
 # JOUCS changes: aim assist for controller/touch players (client), money per
 # kill as a setting and smooth first-time bot map analysis (ReGameDLL).
+# (Some upstream files have Windows line endings; the patches are plain LF.)
 COPY patches /patches
-RUN git apply -v /patches/cs16-client.patch \
-    && cd 3rdparty/ReGameDLL_CS && git apply -v /patches/regamedll.patch
+RUN apply() { for f in $(sed -n 's|^+++ b/||p' "$1"); do if [ -f "$f" ]; then sed -i 's/\r$//' "$f"; fi; done; git apply -v "$1"; } \
+    && apply /patches/cs16-client.patch \
+    && cd 3rdparty/ReGameDLL_CS && apply /patches/regamedll.patch
 RUN emcmake cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/cs/out \
     && cmake --build build -j"$(nproc)" --target install
 

@@ -1,9 +1,3 @@
-diff --git a/3rdparty/ReGameDLL_CS b/3rdparty/ReGameDLL_CS
---- a/3rdparty/ReGameDLL_CS
-+++ b/3rdparty/ReGameDLL_CS
-@@ -1 +1 @@
--Subproject commit 1bffd442191715a956a9db3a63cbe43956f92953
-+Subproject commit 1bffd442191715a956a9db3a63cbe43956f92953-dirty
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
 index 036da3f..1d72bb1 100644
 --- a/cl_dll/input/input_xash3d.cpp

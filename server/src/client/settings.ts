@@ -32,6 +32,7 @@ export type Settings = {
     crossT: boolean
     crossDynamic: boolean
     voice: 'off' | 'push' | 'open' // voice chat: off, hold a button to talk, always on
+    smoothing: number // ms: how far in the past other players are drawn (ex_interp)
     pad: Record<string, string> // action id -> engine key name ('' = none)
 }
 
@@ -93,7 +94,7 @@ const DEFAULTS: Omit<Settings, 'pad'> = {
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
-    voice: 'off',
+    voice: 'off', smoothing: 33,
 }
 
 export function loadSettings(): Settings {
@@ -134,6 +135,11 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
         `cl_showfps ${s.showFps ? 1 : 0}`,
         `volume ${s.volume}`,
         `MP3Volume ${s.music}`,
+        // netcode: 60 updates a second each way (engine defaults 20 and 30), and others drawn
+        // `smoothing` ms late instead of 100; the engine keeps that at least one update long
+        'cl_updaterate 60',
+        'cl_cmdrate 60',
+        `ex_interp ${(s.smoothing / 1000).toFixed(3)}`,
         // voice chat runs in the page (voice.ts); the engine's own would ask for the microphone
         'voice_enable 0',
         'alias +joucs_talk "echo JOUCS_TALK 1"',
@@ -305,7 +311,7 @@ export type HostPanel = {
     skills: string[]
     skill: number
     setSkill: (n: number) => void
-    players: { key: string; name: string }[]
+    players: { key: string; name: string; link: () => Promise<string> }[]
     kick: (key: string) => void
 }
 
@@ -316,6 +322,7 @@ type Hooks = {
     enterFullscreen: () => void
     openQuick: () => void
     host: () => HostPanel | undefined
+    link: () => Promise<string> | undefined // a friend's connection to the host
     onPause: (paused: boolean) => void // offline games actually pause
     showStats: () => void
 }
@@ -477,6 +484,11 @@ export function initSettings(hooks: Hooks) {
             range('Volume', 'volume', 0, 1, 0.05, v => `${Math.round(v * 100)}%`),
             range('Music volume', 'music', 0, 1, 0.05, v => `${Math.round(v * 100)}%`),
         ]],
+        ['Connection', () => [
+            range('Smoothing (how far back other players are shown)', 'smoothing', 17, 100, 1, v => `${v} ms`),
+            el('p', {className: 'msg', textContent: 'Lower shows other players closer to where they really are. ' +
+                    'If they stutter or jump around, for example when playing with someone far away, raise it to 50–100 ms.'}),
+        ]],
     ]
 
     function hostRows(h: HostPanel): Node[] {
@@ -512,9 +524,11 @@ export function initSettings(hooks: Hooks) {
                 withId(button('− Remove a bot', () => { h.setBots(h.bots - 1); render('bots-less') }), 'bots-less'),
                 withId(button('+ Add a bot', () => { h.setBots(h.bots + 1); render('bots-more') }), 'bots-more'),
                 skillSelect),
-            ...h.players.map(p => el('div', {className: 'host-change'},
-                el('span', {className: 'host-label', textContent: p.name || 'Friend'}),
-                button('Remove from lobby', () => { h.kick(p.key); render() }))),
+            ...h.players.map(p => {
+                const label = el('span', {className: 'host-label', textContent: p.name || 'Friend'})
+                p.link().then(t => { if (t) label.textContent += ` · ${t}` })
+                return el('div', {className: 'host-change'}, label, button('Remove from lobby', () => { h.kick(p.key); render() }))
+            }),
         ]
     }
 
@@ -542,8 +556,11 @@ export function initSettings(hooks: Hooks) {
                 [host ? 'Close the lobby and quit' : 'Quit to JOUCS home', () => { close(false); hooks.quitHome() }],
             )
         }
+        const link = el('p', {className: 'msg'})
+        const linkText = hooks.link() // a friend in a lobby
+        linkText?.then(t => { if (t) link.textContent = `Connection to the host: ${t}` })
         return [
-            ...(host ? hostRows(host) : []),
+            ...(host ? hostRows(host) : linkText ? [link] : []),
             el('div', {className: 'pause-list'}, ...items.map(([label, fn]) => button(label, fn))),
         ]
     }

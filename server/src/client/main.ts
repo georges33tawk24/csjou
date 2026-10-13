@@ -836,6 +836,7 @@ const settingsUi = initSettings({
         players: hosting.lobby.players(),
         kick,
     },
+    link: () => lobby?.link(),
     onPause: pauseOffline,
     showStats: () => showSummaryOverGame(stats.summary(current.map, current.mode)),
 })

@@ -5,8 +5,8 @@ import type {VoicePlayer} from './voice'
 
 // Lobbies run in the host's browser: their engine is a listen server and each
 // friend connects to it peer-to-peer (WebRTC). PeerJS's free public service
-// introduces the two browsers (and relays traffic when a network blocks direct
-// connections); after that nothing goes through any server of ours.
+// introduces the two browsers; when a network blocks direct connections, the
+// traffic goes through Cloudflare's relay (turn-worker/ hands out its passwords).
 //
 // Per friend there is one WebRTC connection with three channels:
 //   PeerJS's JSON channel    lobby messages (info, join, welcome, reject, ...)
@@ -52,6 +52,34 @@ function channels(conn: DataConnection) {
     const files = conn.peerConnection.createDataChannel('files', FILES_CHANNEL)
     game.binaryType = files.binaryType = 'arraybuffer'
     return {game, files}
+}
+
+// PeerJS's own relay servers shut down in 2023 and it still lists them, so
+// always pass our own: STUN finds direct routes, the relay covers the rest.
+const TURN_URL = 'https://joucs-turn.georges33tawk24.workers.dev'
+const STUN: RTCIceServer[] = [{urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302']}]
+
+async function newPeer(id?: string) {
+    let iceServers = STUN
+    try {
+        const r = await fetch(TURN_URL, {signal: AbortSignal.timeout(4000)})
+        if (r.ok) iceServers = (await r.json()).iceServers
+    } catch { /* relay unreachable: direct connections only */ }
+    const options = {config: {iceServers}}
+    return id ? new Peer(id, options) : new Peer(options)
+}
+
+/** "120 ms · direct": the round trip and route of a connection, from the browser's own stats */
+export async function linkText(pc: RTCPeerConnection | undefined): Promise<string> {
+    const stats = await pc?.getStats().catch(() => undefined)
+    if (!stats) return ''
+    let pair: RTCIceCandidatePairStats | undefined
+    stats.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId) })
+    stats.forEach(r => { if (!pair && r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r }) // Firefox
+    if (!pair) return ''
+    const relay = [pair.localCandidateId, pair.remoteCandidateId].some(id => stats.get(id)?.candidateType === 'relay')
+    const ms = pair.currentRoundTripTime === undefined ? '' : `${Math.round(pair.currentRoundTripTime * 1000)} ms · `
+    return ms + (relay ? 'through the relay' : 'direct')
 }
 
 const PEER_ERRORS: Record<string, string> = {
@@ -146,7 +174,7 @@ export async function hostLobby(opts: HostOptions) {
         return {...rest, players: 1 + joinedCount() + bots, private: !!opts.password}
     }
 
-    const peer = new Peer(peerId(opts.code))
+    const peer = await newPeer(peerId(opts.code))
     await peerReady(peer)
     peer.on('disconnected', () => setTimeout(() => { if (!peer.destroyed) peer.reconnect() }, 2000))
     peer.on('error', () => undefined) // lost contact with the lobby service: 'disconnected' reconnects
@@ -236,7 +264,7 @@ export async function hostLobby(opts: HostOptions) {
             peer.destroy()
         },
         guests: joinedCount,
-        players: () => joined().map(([key, g]) => ({key, name: g.name})),
+        players: () => joined().map(([key, g]) => ({key, name: g.name, link: () => linkText(g.conn.peerConnection)})),
         /** tell friends' lobby screens about a new map or mode */
         broadcastInfo() {
             for (const [, g] of joined()) g.conn.send({t: 'info', ...info()} satisfies Msg)
@@ -305,7 +333,7 @@ export type JoinOptions = {
 export type JoinResult = { game: RTCDataChannel; files?: Blob; extras: Extra[]; token: string }
 
 export async function findLobby(code: string) {
-    const peer = new Peer()
+    const peer = await newPeer()
     await peerReady(peer)
     const conn = peer.connect(peerId(code), {serialization: 'json', reliable: true})
     await connReady(peer, conn).catch(e => { peer.destroy(); throw e })
@@ -406,6 +434,7 @@ export async function findLobby(code: string) {
             conn.send({t: 'voice', on: true} satisfies Msg)
         },
         peer,
+        link: () => linkText(conn.peerConnection),
         close() { peer.destroy() },
     }
 }
@@ -416,7 +445,7 @@ export type Lobby = Awaited<ReturnType<typeof findLobby>>
 export async function probeLobbies(codes: string[]): Promise<Map<string, LobbyInfo | undefined>> {
     const result = new Map<string, LobbyInfo | undefined>()
     if (!codes.length) return result
-    const peer = new Peer()
+    const peer = await newPeer()
     try { await peerReady(peer) } catch { return result }
     await Promise.all(codes.map(code => new Promise<void>(resolve => {
         const conn = peer.connect(peerId(code), {serialization: 'json', reliable: true})

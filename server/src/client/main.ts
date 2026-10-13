@@ -30,7 +30,59 @@ const store = {
     set: (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* ignore */ } },
 }
 
+// ---------- where the lobby server is ----------
+// The page is served by the JOUCS server itself (localhost, or the host's
+// Cloudflare link) or from GitHub Pages. Pages has a fixed address, so browsers
+// keep the game files between sessions; there, link.json (written by
+// `joucs.sh online`) says where the host's server currently is.
+
+const LINK_RE = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com\/?$/
+const onPages = location.hostname.endsWith('.github.io')
+
+async function findServer(): Promise<URL | undefined> {
+    if (!onPages) return new URL('./', location.href)
+    const owner = location.hostname.split('.')[0]
+    const repo = location.pathname.split('/')[1]
+    let link: { url?: string } | undefined
+    try {
+        // the API is fresher than the site's 10-minute cache
+        const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/link.json?ref=gh-pages`,
+            {cache: 'no-store', headers: {Accept: 'application/vnd.github.raw+json'}})
+        if (res.ok) link = await res.json()
+    } catch { /* fall back below */ }
+    link ??= await fetch(`link.json?${Date.now()}`, {cache: 'no-store'}).then(r => r.json()).catch(() => undefined)
+    return link?.url && LINK_RE.test(link.url) ? new URL(link.url.replace(/\/?$/, '/')) : undefined
+}
+
+const serverPromise = findServer()
+let server: URL | undefined
+const api = (path: string) => new URL(path, server).href
+
+// same values the server image hands out at /config
+const ENGINE: EngineConfig = {
+    arguments: ['-windowed', '-game', 'cstrike'],
+    console: ['_vgui_menus 1'],
+    game_dir: 'cstrike',
+    libraries: {
+        client: 'cstrike/cl_dlls/client_emscripten_wasm32.wasm',
+        server: 'cstrike/dlls/cs_emscripten_wasm32.wasm',
+        menu: 'cstrike/cl_dlls/menu_emscripten_wasm32.wasm',
+        extras: 'cstrike/extras.pk3',
+        filesystem: 'filesystem_stdio.wasm',
+    },
+    dynamic_libraries: ['dlls/cs_emscripten_wasm32.wasm', '/rodir/filesystem_stdio.wasm'],
+    files_map: {
+        'dlls/cs_emscripten_wasm32.wasm': 'cstrike/dlls/cs_emscripten_wasm32.wasm',
+        '/rodir/filesystem_stdio.wasm': 'filesystem_stdio.wasm',
+    },
+}
+
 // ---------- game data: start downloading right away ----------
+
+function showData(percent: number, text: string) {
+    $('dataBar').style.width = `${percent}%`
+    $('dataText').textContent = text
+}
 
 async function fetchWithProgress(url: string) {
     const res = await fetch(url)
@@ -44,21 +96,38 @@ async function fetchWithProgress(url: string) {
         if (done) break
         chunks.push(value)
         received += value.length
-        if (total) {
-            $('dataBar').style.width = `${(received / total) * 100}%`
-            $('dataText').textContent = `Downloading game files… ${Math.round((received / total) * 100)}%`
-        }
+        if (total) showData(received / total * 100, `Downloading game files from the host… ${Math.round(received / total * 100)}% (only the first time)`)
     }
-    $('dataBar').style.width = '100%'
-    $('dataText').textContent = 'Game files ready'
     return new Blob(chunks as BlobPart[]).arrayBuffer()
 }
 
-const configPromise: Promise<EngineConfig> = fetch('/config').then(r => r.json())
-const filesPromise = Promise.all([
-    fetchWithProgress('valve.zip').then(loadAsync),
-    configPromise.then(c => fetch(c.libraries.extras)).then(r => r.arrayBuffer()),
-])
+/** The host's valve.zip, kept in the browser and only downloaded again when the host's file changes. */
+async function gameFiles(): Promise<ArrayBuffer> {
+    const cache = typeof caches === 'undefined' ? undefined : await caches.open('joucs-game-files').catch(() => undefined)
+    const cached = await cache?.match('valve.zip')
+    let version = ''
+    if (server) {
+        const head = await fetch(api('valve.zip'), {method: 'HEAD'}).catch(() => undefined)
+        if (head?.ok) version = `${head.headers.get('Content-Length')}-${head.headers.get('Last-Modified')}`
+    }
+    if (cached && (!version || cached.headers.get('X-Joucs-Version') === version)) {
+        showData(100, 'Game files ready (saved on this device)')
+        return cached.arrayBuffer()
+    }
+    if (!server) throw new Error('the lobby is offline and this device has no saved game files yet')
+    const data = await fetchWithProgress(api('valve.zip'))
+    await cache?.put('valve.zip', new Response(data, {headers: {'X-Joucs-Version': version}})).catch(() => undefined)
+    showData(100, 'Game files ready')
+    return data
+}
+
+const filesPromise = serverPromise.then(found => {
+    server = found
+    return Promise.all([
+        gameFiles().then(loadAsync),
+        fetch(ENGINE.libraries.extras).then(r => r.arrayBuffer()),
+    ])
+})
 filesPromise.catch(e => {
     $('dataText').textContent = `Could not load game files (${e.message}). Refresh to retry.`
 })
@@ -123,15 +192,27 @@ offBots.input.value = store.get('offBots', '6')
 offBots.sync()
 offDifficulty.value = store.get('offDifficulty', '1')
 
-// nav = the server already has bot navigation data for the map
-fetch('/api/maps').then(r => r.json()).then((maps: { name: string; nav: boolean }[]) => {
+// nav = the server already has bot navigation data for the map. Without a
+// server (lobby offline, playing from GitHub Pages) the saved game files list the maps.
+type MapInfo = { name: string; nav: boolean }
+async function listMaps(): Promise<MapInfo[]> {
+    await serverPromise
+    if (server) {
+        const maps = await fetch(api('api/maps')).then(r => r.json()).catch(() => undefined)
+        if (maps) return maps
+    }
+    const [zip] = await filesPromise
+    return Object.keys(zip.files).filter(f => /^cstrike\/maps\/[a-z0-9_]+\.bsp$/.test(f))
+        .map(f => ({name: f.slice('cstrike/maps/'.length, -'.bsp'.length), nav: false})).sort((a, b) => a.name.localeCompare(b.name))
+}
+listMaps().then(maps => {
     offMap.append(...maps.map(m => new Option(m.name, m.name)))
     // online bots on a map without nav data take many minutes to appear the
     // first time; playing that map offline once uploads the data instantly
     hostMap.append(...maps.map(m => new Option(m.nav ? m.name : `${m.name} (play offline first for bots)`, m.name)))
     offMap.value = store.get('offMap', 'de_dust2')
     if (!offMap.value && maps.length) offMap.value = maps[0].name
-})
+}).catch(() => undefined)
 
 let hostTouched = false
 for (const el of [lobbyNameInput, hostMap, hostDifficulty, hostMax.input, hostBots.input, hostVisibility, lobbyPasswordInput]) {
@@ -142,7 +223,9 @@ let lobby: ServerState | undefined
 
 async function refreshStatus() {
     try {
-        const s: ServerState = await fetch('/api/status').then(r => r.json())
+        await serverPromise
+        if (!server) throw new Error('no lobby link')
+        const s: ServerState = await fetch(api('api/status')).then(r => r.json())
         lobby = s
         $('statusDot').classList.add('on')
         $('lobbyName').textContent = s.name
@@ -168,8 +251,11 @@ async function refreshStatus() {
         $('statusDot').classList.remove('on')
         $('lobbyName').textContent = 'Lobby is offline'
         $('lobbyLock').hidden = true
-        $('statusText').textContent = 'The host has not started the server.'
+        $('statusText').textContent = onPages
+            ? 'The host has not started JOUCS online. Refresh when they have. You can still play offline with bots.'
+            : 'The host has not started the server.'
     }
+    $<HTMLButtonElement>('join').disabled = !lobby
 }
 refreshStatus()
 const statusTimer = setInterval(refreshStatus, 5000)
@@ -187,7 +273,8 @@ $('apply').addEventListener('click', async () => {
     msg.textContent = 'Creating the lobby…'
     store.set('hostPassword', hostPassword.value)
     try {
-        const res = await fetch('/api/server', {
+        if (!server) throw new Error('The lobby server is offline.')
+        const res = await fetch(api('api/server'), {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -320,7 +407,7 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
     if (fullscreen.checked) enterFullscreen()
     document.body.classList.add('playing')
 
-    const config = await configPromise
+    const config = ENGINE
     const opts = {
         canvas: $<HTMLCanvasElement>('canvas'),
         arguments: config.arguments || ['-windowed'],
@@ -336,7 +423,7 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
         filesMap: config.files_map,
         module: {print: keepLog, printErr: keepLog},
     }
-    const x = online ? new Xash3DGameSocket(opts) : new Xash3D(opts)
+    const x = online ? new Xash3DGameSocket(server!, opts) : new Xash3D(opts)
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
     const [[zip, extras]] = await Promise.all([filesPromise, x.init()])
 
@@ -388,7 +475,7 @@ $('join').addEventListener('click', async () => {
         }
         store.set('joinPassword', pw)
         // the engine would only show a rejection inside its own menu, so check first
-        const res = await fetch('/api/join', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: pw})})
+        const res = await fetch(api('api/join'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: pw})})
             .catch(() => undefined)
         if (!res?.ok) {
             joinMsg.textContent = res ? (await res.text()).trim() : 'Could not reach the lobby.'
@@ -413,7 +500,7 @@ $('playOffline').addEventListener('click', () => {
     launch(false, async x => {
         const navPath = `/rodir/cstrike/maps/${map}.nav`
         // reuse the server's bot navigation data when it has it
-        const nav = await fetch(`/api/nav/${map}`).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null)
+        const nav = server ? await fetch(api(`api/nav/${map}`)).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null) : null
         if (nav) x.em!.FS.writeFile(navPath, new Uint8Array(nav))
 
         x.Cmd_ExecuteString('maxplayers 16')
@@ -425,9 +512,9 @@ $('playOffline').addEventListener('click', () => {
         }
 
         // first bots on this map: the game builds nav data (~30s), share it with the server
-        if (!nav && bots > 0) {
+        if (!nav && bots > 0 && server) {
             await x.waitLog(`${map}.nav' saved`, undefined, 15 * 60_000)
-            await fetch(`/api/nav/${map}`, {method: 'POST', body: x.em!.FS.readFile(navPath)})
+            await fetch(api(`api/nav/${map}`), {method: 'POST', body: x.em!.FS.readFile(navPath)})
         }
     })
 })

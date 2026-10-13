@@ -2,13 +2,13 @@ import {Net, Packet, Xash3D, Xash3DOptions} from "xash3d-fwgs"
 
 /**
  * Game packets to the JOUCS server over a WebSocket (/game), one message per
- * packet. Goes through the same HTTPS link as the page, so hosting needs no
- * router port forwarding. The engine connects to 127.0.0.1:8080 as before.
+ * packet. Goes through the host's HTTPS link, so hosting needs no router port
+ * forwarding. The engine connects to 127.0.0.1:8080 as before.
  */
 export class Xash3DGameSocket extends Xash3D {
     private ws?: WebSocket
 
-    constructor(opts?: Xash3DOptions) {
+    constructor(private gameServer: URL, opts?: Xash3DOptions) {
         super(opts)
         this.net = new Net(this)
     }
@@ -19,7 +19,9 @@ export class Xash3DGameSocket extends Xash3D {
 
     private connect() {
         return new Promise<void>((resolve, reject) => {
-            const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/game`)
+            const url = new URL("game", this.gameServer)
+            url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+            const ws = new WebSocket(url)
             ws.binaryType = 'arraybuffer'
             ws.onopen = () => resolve()
             ws.onerror = () => reject(new Error('Could not reach the game server'))

@@ -90,6 +90,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func handleAPI(w http.ResponseWriter, r *http.Request) bool {
+	// The JOUCS page is also served from GitHub Pages (a fixed address, so
+	// browsers keep the game files between sessions) and talks to this server
+	// across origins. Host actions still need the host password.
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Expose-Headers", "Content-Length, Last-Modified")
+	if r.Method == http.MethodOptions {
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST")
+		h.Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
 	switch r.URL.Path {
 	case "/api/maps":
 		writeJSON(w, listMaps())

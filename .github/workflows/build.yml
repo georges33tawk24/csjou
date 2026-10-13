@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # publish the page to the gh-pages branch
   packages: write
 
 jobs:
@@ -33,3 +33,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
         run: docker push "$IMAGE"
+      - name: Publish the page to GitHub Pages
+        # The same page the server serves, minus the game files (those stay on
+        # the host). A fixed address lets browsers keep the game files between
+        # sessions. One fresh commit each time keeps the branch small; the
+        # host's current lobby link (link.json, written by joucs.sh) is kept.
+        run: |
+          id=$(docker create --platform linux/386 "$IMAGE")
+          docker cp "$id:/xashds/public/." page
+          docker rm "$id" >/dev/null
+          test ! -e page/valve.zip
+          if git fetch -q --depth 1 origin gh-pages && git show FETCH_HEAD:link.json > page/link.json; then :; else echo '{"url": ""}' > page/link.json; fi
+          touch page/.nojekyll
+          cd page
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "JOUCS page from ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

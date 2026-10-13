@@ -31,5 +31,11 @@ Open `http://localhost:27016`. Everything, game traffic included, runs over that
 (game packets use a WebSocket at `/game`), so friends can join through any HTTPS tunnel with no
 router setup: `cloudflared tunnel --url http://localhost:27016`.
 
+The build also publishes the page to GitHub Pages (`https://<owner>.github.io/<repo>/`). That
+address never changes, so browsers keep the 240 MB of game files after the first visit. The page
+finds the host through `link.json` on the `gh-pages` branch, which the host's start script updates
+whenever it opens or closes its tunnel. Players who have the files saved can also play offline with
+bots from that address while the host is away.
+
 On Apple Silicon with Colima, register 32-bit x86 emulation once per VM start:
 `docker run --privileged --rm tonistiigi/binfmt --install 386`.

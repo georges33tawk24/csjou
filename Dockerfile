@@ -13,14 +13,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /xash
 COPY src/xash3d-fwgs .
 RUN ./waf configure -T release -d --enable-openmp && ./waf build
-# CS game logic: official ReGameDLL release (drop-in for Valve's cs.so)
+# CS game logic: official ReGameDLL release (drop-in for Valve's cs.so).
+# Bots are off by default on dedicated servers, and game.cfg (run every map)
+# would otherwise keep them waiting for a human to join a team.
 ARG REGAMEDLL=5.30.0.814
 ARG REGAMEDLL_SHA256=457f5c96a4d10280fcad47f106cbd5be86363a47df1ccab91c514e9d1bc6fd18
 RUN curl -fsSL -o /tmp/regamedll.zip \
         https://github.com/rehlds/ReGameDLL_CS/releases/download/$REGAMEDLL/regamedll-bin-$REGAMEDLL.zip \
     && echo "$REGAMEDLL_SHA256  /tmp/regamedll.zip" | sha256sum -c - \
     && unzip -q /tmp/regamedll.zip 'bin/linux32/*' -d /tmp/regamedll \
-    && mkdir -p /cs/out && mv /tmp/regamedll/bin/linux32/cstrike /cs/out/
+    && mkdir -p /cs/out && mv /tmp/regamedll/bin/linux32/cstrike /cs/out/ \
+    && sed -i 's/^bot_enable "0"/bot_enable "1"/' /cs/out/cstrike/game_init.cfg \
+    && sed -i 's/^bot_join_after_player "1"/bot_join_after_player "0"/' /cs/out/cstrike/game.cfg \
+    && grep -q '^bot_enable "1"' /cs/out/cstrike/game_init.cfg \
+    && grep -q '^bot_join_after_player "0"' /cs/out/cstrike/game.cfg
 
 # ---- Go WebRTC server linked against the engine ----
 FROM --platform=linux/386 golang:1.25.1 AS go
@@ -76,7 +82,8 @@ COPY --from=client /client/src/client/dist ./public
 COPY --from=cswasm /cs/out/cstrike ./public/cstrike
 COPY --from=client /client/node_modules/xash3d-fwgs/dist/filesystem_stdio.wasm ./public/filesystem_stdio.wasm
 COPY entrypoint.sh /entrypoint.sh
-RUN chown -R xashds:xashds /xashds
+# cstrike/maps exists so a volume mounted there (map files + bot nav meshes) is writable
+RUN mkdir -p cstrike/maps && chown -R xashds:xashds /xashds
 USER xashds
 
 ENV XASH3D_BASEDIR=/xashds \
@@ -94,4 +101,4 @@ ENV XASH3D_BASEDIR=/xashds \
 
 EXPOSE 27016/tcp 27018/udp
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["+map", "de_dust2", "+maxplayers", "16", "+bot_join_after_player", "0", "+bot_quota_mode", "normal", "+bot_difficulty", "1", "+bot_quota", "0"]
+CMD ["+map", "de_dust2", "+maxplayers", "16", "+bot_quota_mode", "normal", "+bot_difficulty", "1", "+bot_quota", "0"]

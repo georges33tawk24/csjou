@@ -104,10 +104,14 @@ offBots.input.value = store.get('offBots', '6')
 offBots.sync()
 offDifficulty.value = store.get('offDifficulty', '1')
 
-fetch('/api/maps').then(r => r.json()).then((maps: string[]) => {
-    for (const sel of [offMap, hostMap]) sel.append(...maps.map(m => new Option(m, m)))
+// nav = the server already has bot navigation data for the map
+fetch('/api/maps').then(r => r.json()).then((maps: { name: string; nav: boolean }[]) => {
+    offMap.append(...maps.map(m => new Option(m.name, m.name)))
+    // online bots on a map without nav data take many minutes to appear the
+    // first time; playing that map offline once uploads the data instantly
+    hostMap.append(...maps.map(m => new Option(m.nav ? m.name : `${m.name} (play offline first for bots)`, m.name)))
     offMap.value = store.get('offMap', 'de_dust2')
-    if (!offMap.value && maps.length) offMap.value = maps[0]
+    if (!offMap.value && maps.length) offMap.value = maps[0].name
 })
 
 let hostTouched = false
@@ -162,6 +166,14 @@ $('apply').addEventListener('click', async () => {
 
 // ---------- starting the game ----------
 
+// last engine console lines, readable as window.joucsLog from devtools
+const engineLog: string[] = []
+Object.assign(window, {joucsLog: engineLog})
+function keepLog(line: string) {
+    engineLog.push(line)
+    if (engineLog.length > 500) engineLog.shift()
+}
+
 function playerName() {
     const name = username.value.replace(/[";\\]/g, '').trim().slice(0, 24) || 'Player'
     store.set('username', name)
@@ -187,8 +199,10 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
         },
         dynamicLibraries: config.dynamic_libraries,
         filesMap: config.files_map,
+        module: {print: keepLog, printErr: keepLog},
     }
     const x = online ? new Xash3DWebRTC(opts) : new Xash3D(opts)
+    Object.assign(window, {joucs: x}) // for troubleshooting from devtools
     const [[zip, extras]] = await Promise.all([filesPromise, x.init()])
 
     await Promise.all(Object.entries(zip.files).map(async ([filename, file]) => {
@@ -223,12 +237,23 @@ $('playOffline').addEventListener('click', () => {
     store.set('offDifficulty', String(skill))
 
     launch(false, async x => {
+        const navPath = `/rodir/cstrike/maps/${map}.nav`
+        // reuse the server's bot navigation data when it has it
+        const nav = await fetch(`/api/nav/${map}`).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null)
+        if (nav) x.em!.FS.writeFile(navPath, new Uint8Array(nav))
+
         x.Cmd_ExecuteString('maxplayers 16')
         x.Cmd_ExecuteString('sv_lan 1')
-        // bot cvars only exist once the map (and game rules) are loaded
-        await x.waitLog('player server started', `map ${map}`, 120_000).catch(() => undefined)
+        // bots are added once the local player is in the game
+        await x.waitLog('propagation complete', `map ${map}`, 120_000).catch(() => undefined)
         for (const cmd of ['bot_join_after_player 0', 'bot_quota_mode normal', `bot_difficulty ${skill}`, `bot_quota ${bots}`]) {
             x.Cmd_ExecuteString(cmd)
+        }
+
+        // first bots on this map: the game builds nav data (~30s), share it with the server
+        if (!nav && bots > 0) {
+            await x.waitLog(`${map}.nav' saved`, undefined, 15 * 60_000)
+            await fetch(`/api/nav/${map}`, {method: 'POST', body: x.em!.FS.readFile(navPath)})
         }
     })
 })

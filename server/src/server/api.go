@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,13 +59,19 @@ func initConsole() {
 	}
 }
 
-func listMaps() []string {
+type mapInfo struct {
+	Name string `json:"name"`
+	Nav  bool   `json:"nav"` // bots are ready without generating a nav mesh first
+}
+
+func listMaps() []mapInfo {
 	files, _ := filepath.Glob("cstrike/maps/*.bsp")
-	maps := make([]string, 0, len(files))
+	sort.Strings(files)
+	maps := make([]mapInfo, 0, len(files))
 	for _, f := range files {
-		maps = append(maps, strings.TrimSuffix(filepath.Base(f), ".bsp"))
+		_, err := os.Stat(strings.TrimSuffix(f, ".bsp") + ".nav")
+		maps = append(maps, mapInfo{Name: strings.TrimSuffix(filepath.Base(f), ".bsp"), Nav: err == nil})
 	}
-	sort.Strings(maps)
 	return maps
 }
 
@@ -89,9 +97,68 @@ func handleAPI(w http.ResponseWriter, r *http.Request) bool {
 	case "/api/server":
 		applySettings(w, r)
 	default:
-		return false
+		if !strings.HasPrefix(r.URL.Path, "/api/nav/") {
+			return false
+		}
+		handleNav(w, r, strings.TrimPrefix(r.URL.Path, "/api/nav/"))
 	}
 	return true
+}
+
+// setNavBspSize rewrites the .bsp size stamped in a v4+ nav header. ReGameDLL
+// warns players when it differs from the map it loads, and the browser engine
+// cannot stat the .bsp (it stamps 0xFFFFFFFF), so each side gets its own value.
+func setNavBspSize(nav []byte, size uint32) {
+	if len(nav) >= 12 && binary.LittleEndian.Uint32(nav[4:]) >= 4 {
+		binary.LittleEndian.PutUint32(nav[8:], size)
+	}
+}
+
+// Bot navigation meshes. Generating one takes ~30s in a browser but many
+// minutes on the emulated 32-bit server, so offline games upload theirs.
+const navMagic = 0xFEEDFACE
+
+func handleNav(w http.ResponseWriter, r *http.Request, name string) {
+	if !mapRe.MatchString(name) {
+		http.NotFound(w, r)
+		return
+	}
+	path := "cstrike/maps/" + name + ".nav"
+	switch r.Method {
+	case http.MethodGet:
+		data, err := os.ReadFile(path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		setNavBspSize(data, 0xFFFFFFFF) // what the browser engine reads as the .bsp size
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		bsp, err := os.Stat("cstrike/maps/" + name + ".bsp")
+		if err != nil {
+			http.Error(w, "unknown map", http.StatusBadRequest)
+			return
+		}
+		if _, err := os.Stat(path); err == nil {
+			w.WriteHeader(http.StatusNoContent) // first upload wins; never overwrite
+			return
+		}
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
+		if err != nil || len(data) < 8 || binary.LittleEndian.Uint32(data) != navMagic {
+			http.Error(w, "not a nav file", http.StatusBadRequest)
+			return
+		}
+		setNavBspSize(data, uint32(bsp.Size()))
+		tmp := path + ".upload"
+		if err := os.WriteFile(tmp, data, 0o644); err != nil || os.Rename(tmp, path) != nil {
+			http.Error(w, "could not save", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	default:
+		http.Error(w, "GET or POST", http.StatusMethodNotAllowed)
+	}
 }
 
 func applySettings(w http.ResponseWriter, r *http.Request) {

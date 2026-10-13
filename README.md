@@ -4,6 +4,8 @@ Counter-Strike 1.6 in the browser, served from your own machine.
 
 - **Online**: friends open your link and join your server. The host picks the map and up to 12 bots from the homepage.
 - **Offline with bots**: the whole game, server included, runs in your browser. No port forwarding.
+- Bots need a navigation mesh per map. The browser builds one in ~30s and uploads it to the server,
+  which would otherwise take ~10 min under 32-bit emulation. Maps marked "play offline first" lack one.
 
 Rebuilt from the MIT-licensed [webxash3d-fwgs](https://github.com/daShao999/WebXash3D-Fwgs-yohimik)
 `cs-web-server` after the original repo, npm packages and Docker images were deleted.

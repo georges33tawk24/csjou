@@ -371,16 +371,30 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
     await afterStart(x)
 }
 
-$('join').addEventListener('click', () => {
+$('join').addEventListener('click', async () => {
+    const joinMsg = $('joinMsg')
+    joinMsg.textContent = ''
+    if (lobby && lobby.players + lobby.bots >= lobby.maxPlayers) {
+        joinMsg.textContent = 'This lobby is full.'
+        return
+    }
     let pw = ''
     if (lobby?.private) {
         pw = joinPassword.value.trim()
         if (!PASSWORD_RE.test(pw)) {
-            $('joinMsg').textContent = 'Enter the lobby password (ask the host).'
+            joinMsg.textContent = 'Enter the lobby password (ask the host).'
             joinPassword.focus()
             return
         }
         store.set('joinPassword', pw)
+        // the engine would only show a rejection inside its own menu, so check first
+        const res = await fetch('/api/join', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: pw})})
+            .catch(() => undefined)
+        if (!res?.ok) {
+            joinMsg.textContent = res ? (await res.text()).trim() : 'Could not reach the lobby.'
+            joinPassword.select()
+            return
+        }
     }
     launch(true, x => {
         x.Cmd_ExecuteString(`password "${pw}"`) // sent with the connection request

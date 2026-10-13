@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // JOUCS lobby / host controls. Console commands are written to the engine's
@@ -105,6 +106,8 @@ func handleAPI(w http.ResponseWriter, r *http.Request) bool {
 		applySettings(w, r)
 	case "/game":
 		gameSocketHandler(w, r)
+	case "/api/join":
+		checkJoin(w, r)
 	default:
 		if !strings.HasPrefix(r.URL.Path, "/api/nav/") {
 			return false
@@ -261,4 +264,26 @@ func applySettings(w http.ResponseWriter, r *http.Request) {
 	state.Name, state.Map, state.MaxPlayers = name, req.Map, req.MaxPlayers
 	state.Bots, state.Difficulty, state.Private = req.Bots, req.Difficulty, pw != ""
 	writeJSON(w, state)
+}
+
+// checkJoin lets the page verify a private lobby's password before it starts
+// the game: the engine only reports a rejection inside its own menu.
+func checkJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req)
+	stateMu.Lock()
+	pw := lobbyPassword
+	stateMu.Unlock()
+	if pw != "" && subtle.ConstantTimeCompare([]byte(req.Password), []byte(pw)) != 1 {
+		time.Sleep(500 * time.Millisecond) // slow down guessing
+		http.Error(w, "Wrong lobby password.", http.StatusForbidden)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

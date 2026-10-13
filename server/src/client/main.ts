@@ -2,7 +2,7 @@ import {loadAsync} from 'jszip'
 import {Xash3D} from 'xash3d-fwgs'
 import xashURL from 'xash3d-fwgs/xash.wasm?url'
 import gl4esURL from 'xash3d-fwgs/libref_webgl2.wasm?url'
-import {Xash3DWebRTC} from "./webrtc"
+import {Xash3DGameSocket} from "./gamesocket"
 import {initMenus} from "./menus"
 import {applySettings, initSettings, loadSettings} from "./settings"
 
@@ -273,7 +273,7 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
         filesMap: config.files_map,
         module: {print: keepLog, printErr: keepLog},
     }
-    const x = online ? new Xash3DWebRTC(opts) : new Xash3D(opts)
+    const x = online ? new Xash3DGameSocket(opts) : new Xash3D(opts)
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
     const [[zip, extras]] = await Promise.all([filesPromise, x.init()])
 

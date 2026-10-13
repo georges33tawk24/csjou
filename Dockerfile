@@ -103,6 +103,6 @@ ENV XASH3D_BASEDIR=/xashds \
     DYNAMIC_LIBRARIES="dlls/cs_emscripten_wasm32.wasm,/rodir/filesystem_stdio.wasm" \
     FILES_MAP="dlls/cs_emscripten_wasm32.wasm:cstrike/dlls/cs_emscripten_wasm32.wasm,/rodir/filesystem_stdio.wasm:filesystem_stdio.wasm"
 
-EXPOSE 27016/tcp 27018/udp
+EXPOSE 27016/tcp
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["+map", "de_dust2", "+maxplayers", "16", "+bot_quota_mode", "normal", "+bot_difficulty", "1", "+bot_quota", "0"]

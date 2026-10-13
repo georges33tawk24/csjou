@@ -21,14 +21,15 @@ You need `valve.zip` with `valve/` and `cstrike/` at the zip root, e.g. from Val
 
 ```bash
 docker run -d --name joucs --restart unless-stopped --platform linux/386 \
-  -p 27016:27016 -p 27018:27018/udp \
-  -e IP=<your-public-ip> -e PORT=27018 -e ADMIN_PASSWORD=<pick-one> \
+  -p 27016:27016 -e ADMIN_PASSWORD=<pick-one> \
   -v "$PWD/valve.zip:/xashds/public/valve.zip:ro" \
+  -v joucs-maps:/xashds/cstrike/maps \
   ghcr.io/<owner>/cs-web-server:latest
 ```
 
-Open `http://localhost:27016`. For friends, forward UDP 27018 on your router and share the page
-(e.g. through a Cloudflare tunnel for HTTPS). Host controls on the homepage need `ADMIN_PASSWORD`.
+Open `http://localhost:27016`. Everything, game traffic included, runs over that one HTTP port
+(game packets use a WebSocket at `/game`), so friends can join through any HTTPS tunnel with no
+router setup: `cloudflared tunnel --url http://localhost:27016`.
 
-On Apple Silicon with Colima, start it with `--port-forwarder grpc` so UDP reaches the Mac,
-and register 32-bit x86 emulation once per VM start: `docker run --privileged --rm tonistiigi/binfmt --install 386`.
+On Apple Silicon with Colima, register 32-bit x86 emulation once per VM start:
+`docker run --privileged --rm tonistiigi/binfmt --install 386`.

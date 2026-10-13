@@ -45,6 +45,7 @@ const ACTIONS: Action[] = [
     {id: 'nvg', label: 'Night vision', cmd: 'nightvision', key: ''},
     {id: 'light', label: 'Flashlight', cmd: 'impulse 100', key: ''},
     {id: 'spray', label: 'Spray', cmd: 'impulse 201', key: ''},
+    {id: 'voice', label: 'Voice chat (hold)', cmd: '+voicerecord', key: ''},
 ]
 
 // index = standard Gamepad API button; these are the engine's names for them

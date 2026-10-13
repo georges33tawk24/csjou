@@ -87,7 +87,7 @@ func handleAPI(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, listMaps())
 	case "/api/status":
 		listLock.RLock()
-		players := len(peerConnections)
+		players := len(peerConnections) + int(gameSockets.Load())
 		listLock.RUnlock()
 		stateMu.Lock()
 		s := state
@@ -96,6 +96,8 @@ func handleAPI(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, s)
 	case "/api/server":
 		applySettings(w, r)
+	case "/game":
+		gameSocketHandler(w, r)
 	default:
 		if !strings.HasPrefix(r.URL.Path, "/api/nav/") {
 			return false

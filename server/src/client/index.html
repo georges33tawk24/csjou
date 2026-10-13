@@ -335,21 +335,6 @@
 
         #logo.done { animation: fade-out 0.5s forwards; }
 
-        #warning {
-            position: fixed;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 3;
-            margin: 0;
-            padding: 12px;
-            text-align: center;
-            color: var(--danger);
-            opacity: 0;
-            transition: opacity 0.5s;
-            pointer-events: none;
-        }
-
         audio { display: none; }
 
         @media (prefers-reduced-motion: reduce) {
@@ -447,7 +432,6 @@
         </div>
     </div>
     <canvas id="canvas"></canvas>
-    <p id="warning">If it's not starting, try to enable microphone and refresh</p>
 </div>
 </body>
 </html>

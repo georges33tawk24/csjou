@@ -181,10 +181,10 @@ const CONTROLLER: [string, string, string, string][] = [
     ['STICK2', 'slot3', 'Right stick click', 'Knife'],
     ['DPAD_UP', 'autobuy', 'D-pad up', 'Auto-buy'],
     ['DPAD_DOWN', 'rebuy', 'D-pad down', 'Rebuy last round'],
-    ['DPAD_LEFT', 'slot1', 'D-pad left', 'Primary weapon · menu option 1'],
-    ['DPAD_RIGHT', 'slot2', 'D-pad right', 'Pistol · menu option 2'],
+    ['DPAD_LEFT', 'slot1', 'D-pad left', 'Primary weapon · menu option 1 (e.g. Terrorists)'],
+    ['DPAD_RIGHT', 'slot2', 'D-pad right', 'Pistol · menu option 2 (e.g. Counter-Terrorists)'],
     ['BACK', '+showscores', 'View / Back', 'Scoreboard'],
-    ['START', 'slot5', 'Menu / Start', 'Auto-pick team & skin · bomb'],
+    ['START', 'togglemenu', 'Menu / Options', 'Game menu and settings'],
 ]
 
 $('controllerLayout').append(
@@ -217,6 +217,33 @@ Object.assign(window, {joucsLog: engineLog})
 function keepLog(line: string) {
     engineLog.push(line)
     if (engineLog.length > 500) engineLog.shift()
+    // Quit in the game menu stops the engine; the frozen canvas would stay up.
+    // The engine writes config.cfg right after this line, so wait a tick.
+    if (line.includes('Issuing host shutdown')) setTimeout(backToHome, 0)
+}
+
+// The browser filesystem is wiped on every load, so keep the engine's
+// config.cfg (keybinds, sensitivity, video) in localStorage.
+const CONFIG_PATH = '/rodir/cstrike/config.cfg'
+const PAD_LAYOUT = '2' // bump to re-apply CONTROLLER binds over saved configs
+let engine: Xash3D | undefined
+
+function saveConfig(write: boolean) {
+    try {
+        if (write) engine!.Cmd_ExecuteString('host_writeconfig')
+        store.set('engineConfig', new TextDecoder().decode(engine!.em!.FS.readFile(CONFIG_PATH)))
+    } catch { /* engine not running yet */ }
+}
+
+function backToHome() {
+    saveConfig(false)
+    window.removeEventListener('beforeunload', confirmLeave)
+    location.reload()
+}
+
+function confirmLeave(e: BeforeUnloadEvent) {
+    saveConfig(true)
+    e.preventDefault()
 }
 
 function playerName() {
@@ -259,18 +286,27 @@ async function launch(online: boolean, afterStart: (x: Xash3D) => Promise<void> 
         x.em!.FS.writeFile(path, await file.async('uint8array'))
     }))
     x.em!.FS.writeFile(`/rodir/${config.game_dir}/extras.pk3`, new Uint8Array(extras))
+    const savedConfig = store.get('engineConfig')
+    if (savedConfig) x.em!.FS.writeFile(CONFIG_PATH, savedConfig)
     x.em!.FS.chdir('/rodir')
+    engine = x
 
     $('logo').classList.add('done')
     x.main()
     if (touchControls.checked) x.Cmd_ExecuteString('touch_enable 1')
     x.Cmd_ExecuteString(`name "${name}"`)
     for (const cmd of config.console ?? []) x.Cmd_ExecuteString(cmd)
-    x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away (no confirm press)
-    for (const [key, cmd] of CONTROLLER) x.Cmd_ExecuteString(`bind ${key} "${cmd}"`)
+    // apply the JOUCS controller layout once; after that, binds changed in
+    // Options > Controls are kept in the saved config
+    if (store.get('padLayout') !== PAD_LAYOUT) {
+        x.Cmd_ExecuteString('hud_fastswitch 1') // weapon cycling switches right away
+        for (const [key, cmd] of CONTROLLER) x.Cmd_ExecuteString(`bind ${key} "${cmd}"`)
+        store.set('padLayout', PAD_LAYOUT)
+    }
+    setInterval(() => saveConfig(true), 30_000)
+    document.addEventListener('visibilitychange', () => { if (document.hidden) saveConfig(true) })
+    window.addEventListener('beforeunload', confirmLeave)
     await afterStart(x)
-
-    window.addEventListener('beforeunload', e => e.preventDefault())
 }
 
 $('join').addEventListener('click', () => {

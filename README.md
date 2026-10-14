@@ -7,9 +7,12 @@ Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
   Gun Game, knife arena), map, max players, bots and an optional password. From the pause menu the host can change map and
   mode, add or remove bots, change their skill and remove players.
 - **Join**: open the invite link, or pick the lobby from *Recent lobbies*. Friends connect straight to
-  the host's browser (WebRTC through PeerJS's free public service, which also relays traffic when a
-  network blocks direct connections). No router setup, no server to keep running. A friend whose
-  connection drops rejoins automatically and keeps their place.
+  the host's browser (WebRTC; PeerJS's free public service introduces them, and Cloudflare's free relay
+  carries the traffic when a network blocks direct connections). No router setup, no server to keep
+  running. A friend whose connection drops rejoins automatically and keeps their place. The pause
+  menu shows each connection's ping and whether it is direct or relayed.
+- **Netcode**: an update and a command every frame (up to 100 a second), other players drawn 33 ms behind (the engine's default
+  is 20 updates and 100 ms); *Settings → Connection → Smoothing* raises it for a shaky connection.
 - **Extra maps**: load fan maps (.bsp, .wad or a .zip) on the homepage; a host sends them to friends.
 - **Offline**: the same game modes against bots, entirely in the browser; the pause menu pauses.
 - **Controller**: every action can be bound, a quick menu has drop, radio and chat, the right stick
@@ -51,6 +54,11 @@ bot map analysis that doesn't stall the game in ReGameDLL.
 ./fetch-sources.sh
 docker build --target web --output type=local,dest=page .
 ```
+
+`turn-worker/` is the Cloudflare Worker that hands out relay passwords (Cloudflare Realtime TURN,
+1,000 GB a month free): `npx wrangler deploy` there, then set its `TURN_KEY_ID` and
+`TURN_KEY_API_TOKEN` secrets from a TURN key made in the Cloudflare dashboard (Realtime → TURN Server).
+Without it, lobbies still work wherever a direct connection does.
 
 `page/` is the whole site. GitHub Actions builds it on every push and publishes `main` to the
 `gh-pages` branch (the live site) and other branches to `page-<branch>` for testing.

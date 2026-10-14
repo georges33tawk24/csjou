@@ -135,10 +135,11 @@ function engineCommands(s: Settings, controllerFree: boolean): string[] {
         `cl_showfps ${s.showFps ? 1 : 0}`,
         `volume ${s.volume}`,
         `MP3Volume ${s.music}`,
-        // netcode: 60 updates a second each way (engine defaults 20 and 30), and others drawn
-        // `smoothing` ms late instead of 100; the engine keeps that at least one update long
-        'cl_updaterate 60',
-        'cl_cmdrate 60',
+        // netcode: an update and a command every frame (engine defaults: 20 and 30 a second;
+        // at exactly 60 a 60 fps game skips every other frame), and others drawn `smoothing`
+        // ms late instead of 100. The host allows it with sv_maxupdaterate (main.ts).
+        'cl_updaterate 100',
+        'cl_cmdrate 100',
         `ex_interp ${(s.smoothing / 1000).toFixed(3)}`,
         // voice chat runs in the page (voice.ts); the engine's own would ask for the microphone
         'voice_enable 0',

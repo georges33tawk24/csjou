@@ -633,6 +633,7 @@ async function startServer(x: Xash3D, s: ServerSetup) {
     x.Cmd_ExecuteString(`maxplayers ${s.maxPlayers}`)
     x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
     x.Cmd_ExecuteString('sv_timeout 30') // drop a friend whose browser vanished after 30 s, not 65
+    x.Cmd_ExecuteString('sv_maxupdaterate 100') // friends get an update every frame (settings.ts)
     x.Cmd_ExecuteString(`hostname "${s.name}"`)
     x.Cmd_ExecuteString(`map ${s.map}`)
 }

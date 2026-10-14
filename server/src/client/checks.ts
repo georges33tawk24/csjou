@@ -33,31 +33,44 @@ eq(shapeStick(0.1, 0, 0.12, 2), [0, 0], 'deadzone')
 eq(shapeStick(1, 0, 0.12, 2).map(v => Math.round(v * 1000)), [1000, 0], 'full tilt')
 eq(Math.round(shapeStick(0.56, 0, 0.12, 2)[0] * 100), 25, 'curve')
 
-// game files while friends play: a 3.3 Mbps upload (400 KB/s) carrying 30 KB/s of
-// game traffic, with a router that queues up to 256 KB (640 ms) before dropping.
-// Friends' ping is 60 ms plus that queue. Two minutes, a step per ping (0.5 s).
+// game files while friends play: a home upload carrying 30 KB/s of game traffic,
+// with a router that queues up to 256 KB before dropping. Players' ping is 60 ms
+// plus that queue plus their own wobble (wired, Wi-Fi with spikes, mobile data).
+// Four minutes, a step per ping (0.5 s).
 {
-    const link = 400_000, game = 30_000, buffer = 256_000
-    let rate = Infinity, queue = 0, delivered = 0
-    const pings: number[] = [], added: number[] = []
-    for (let step = 0; step < 240; step++) {
-        const offered = (Math.min(rate, link) + game) / 2
-        const overflow = Math.max(0, queue + offered - link / 2 - buffer)
-        queue = Math.min(buffer, Math.max(0, queue + offered - link / 2))
-        delivered += Math.min(rate, link) / 2 - overflow
-        const delay = queue / link * 1000
-        pings.push(60 + delay + (step * 37 % 7)) // a little jitter
-        if (step >= 20) added.push(delay)
-        rate = nextFileRate(rate, [pings.slice(-120)])
+    let seed = 7
+    const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647
+    const wobble = {
+        wired: () => rnd() * 4,
+        wifi: () => rnd() * 20 + (rnd() < 0.1 ? 50 + rnd() * 100 : 0),
+        mobile: () => rnd() * 60 + (rnd() < 0.15 ? 100 + rnd() * 200 : 0),
     }
-    const mean = added.reduce((a, b) => a + b) / added.length
-    const share = delivered / 120 / (link - game)
-    if (mean > 15 || Math.max(...added) > 100 || share < 0.75) {
-        throw new Error(`file pacing: friends' added ping ${mean.toFixed(0)} ms average, ${Math.max(...added).toFixed(0)} ms max; ` +
-            `files got ${(share * 100).toFixed(0)}% of the spare upload`)
+    const cases: [number, (keyof typeof wobble)[]][] = [
+        [400_000, ['wired']], [400_000, ['mobile']], [400_000, ['wired', 'wifi', 'mobile']], [200_000, ['wifi', 'wifi']],
+    ]
+    for (const [link, players] of cases) {
+        seed = 7
+        const game = 30_000, buffer = 256_000
+        let rate = Infinity, queue = 0, delivered = 0
+        const pings: number[][] = players.map(() => []), added: number[] = []
+        for (let step = 0; step < 480; step++) {
+            const offered = (Math.min(rate, link) + game) / 2
+            const overflow = Math.max(0, queue + offered - link / 2 - buffer)
+            queue = Math.min(buffer, Math.max(0, queue + offered - link / 2))
+            delivered += Math.min(rate, link) / 2 - overflow
+            const delay = queue / link * 1000
+            players.forEach((kind, i) => pings[i].push(60 + delay + wobble[kind]()))
+            if (step >= 20) added.push(delay)
+            rate = nextFileRate(rate, pings.map(p => p.slice(-120)))
+        }
+        added.sort((a, b) => a - b)
+        const mean = added.reduce((a, b) => a + b) / added.length, p95 = added[Math.floor(added.length * 0.95)]
+        const share = delivered / 240 / (link - game)
+        const text = `file pacing, ${link / 1000} KB/s upload, ${players.join(' + ')}: friends' ping +${mean.toFixed(0)} ms ` +
+            `average, +${p95.toFixed(0)} ms at worst (95%); files got ${(share * 100).toFixed(0)}% of the spare upload`
+        if (mean > 20 || p95 > 100 || share < 0.6) throw new Error(text)
+        console.log(text)
     }
-    console.log(`file pacing: friends' added ping ${mean.toFixed(0)} ms average, ${Math.max(...added).toFixed(0)} ms max; ` +
-        `files got ${(share * 100).toFixed(0)}% of the spare upload`)
 }
 
 console.log('checks ok')

@@ -127,15 +127,23 @@ export const extraMaps = (extras: Extra[]) => extras
 /**
  * The next speed (bytes a second) for game files a friend downloads while
  * others play, from those players' ping samples (ms, oldest first, two a
- * second, the last minute). It backs off as soon as anyone's best recent ping
- * is 20 ms over their best of the minute (the files are filling the host's
- * upload), and otherwise speeds up by 16 KB/s every second. Tuned on a model
- * of a home upload in checks.ts.
+ * second, the last minute). A file filling the host's upload raises a player's
+ * ping and keeps it up; Wi-Fi and mobile data make it wobble by itself. So it
+ * backs off when anyone's ping stays up (two samples in a row) by more than
+ * 20 ms plus three times their usual wobble, and otherwise speeds up by 12 KB/s
+ * every second. Tuned on a model of a home upload with wired, Wi-Fi and mobile
+ * players in checks.ts.
  */
 export function nextFileRate(rate: number, pings: number[][]): number {
     if (rate === Infinity) rate = 128 << 10
-    // the lower of the last 2 samples ignores one-off jitter
-    const added = pings.map(p => p.length < 4 ? undefined : Math.min(...p.slice(-2)) - Math.min(...p))
-    if (added.includes(undefined)) return Math.min(rate, 128 << 10) // just joined: no measurement yet
-    return Math.max(...added as number[]) > 20 ? Math.max(32 << 10, rate * 0.7) : rate + (8 << 10)
+    const ready = pings.filter(p => p.length >= 8)
+    if (!ready.length) return Math.min(rate, 128 << 10) // just joined: no measurement yet
+    const lagging = ready.some(p => Math.min(...p.slice(-2)) - Math.min(...p) > 20 + 3 * wobble(p))
+    return lagging ? Math.max(64 << 10, rate * 0.7) : rate + (6 << 10)
+}
+
+/** a player's usual wobble: the median of how far each sample sits above the lowest of its last 4 */
+function wobble(p: number[]) {
+    const d = p.slice(3).map((x, i) => x - Math.min(...p.slice(i, i + 4))).sort((a, b) => a - b)
+    return d[d.length >> 1]
 }

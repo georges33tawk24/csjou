@@ -1,4 +1,5 @@
 import type {Xash3D} from 'xash3d-fwgs'
+import type {MapVote} from './lobby'
 import {BTN, pressedNow, shapeRightStick, watchPad} from './pad'
 
 // JOUCS settings (controller, mouse, crosshair, video, audio) and the pause
@@ -324,6 +325,9 @@ type Hooks = {
     openQuick: () => void
     host: () => HostPanel | undefined
     link: () => Promise<string> | undefined // a friend's connection to the host
+    vote: () => (MapVote & { mine?: number }) | null | undefined // null: in a lobby, no vote now; undefined: no lobby
+    pickMap: (choice: number) => void
+    callVote: () => void
     onPause: (paused: boolean) => void // offline games actually pause
     showStats: () => void
 }
@@ -533,6 +537,23 @@ export function initSettings(hooks: Hooks) {
         ]
     }
 
+    // the map vote: refreshed every second in place, so nothing else in the menu loses focus
+    let voteBox: HTMLElement | undefined
+    function fillVote(box: HTMLElement) {
+        const v = hooks.vote()
+        const focused = (document.activeElement as HTMLElement | null)?.dataset?.id ?? ''
+        box.replaceChildren(...v === null ? [el('div', {className: 'pause-list'},
+            withId(button('Vote for the next map', () => hooks.callVote()), 'vote-call'))]
+            : v && v.winner === undefined ? [
+                el('p', {className: 'msg', textContent: `Vote for the next map · ${v.left} s left`}),
+                el('div', {className: 'host-change'}, ...v.options.map((m, i) => withId(
+                    button(`${i ? m : `Stay on ${m}`} · ${v.counts[i] ?? 0}`, () => hooks.pickMap(i), i === v.mine ? 'secondary picked' : 'secondary'),
+                    `vote-${i}`))),
+            ] : v ? [el('p', {className: 'msg', textContent: v.winner === v.options[0] ? `Staying on ${v.winner}` : `Next map: ${v.winner}`})]
+            : [])
+        if (focused.startsWith('vote')) (box.querySelector<HTMLElement>(`[data-id="${focused}"]`) ?? box.querySelector<HTMLElement>('button'))?.focus()
+    }
+
     function pauseButtons() {
         const inGame = !!hooks.engine()
         const host = inGame ? hooks.host() : undefined
@@ -560,8 +581,11 @@ export function initSettings(hooks: Hooks) {
         const link = el('p', {className: 'msg'})
         const linkText = hooks.link() // a friend in a lobby
         linkText?.then(t => { if (t) link.textContent = `Connection to the host: ${t}` })
+        voteBox = el('div')
+        if (inGame) fillVote(voteBox)
         return [
             ...(host ? hostRows(host) : linkText ? [link] : []),
+            voteBox,
             el('div', {className: 'pause-list'}, ...items.map(([label, fn]) => button(label, fn))),
         ]
     }
@@ -723,6 +747,8 @@ export function initSettings(hooks: Hooks) {
         isOpen: () => !!view,
         openSettings: () => { fromPause = false; show('settings') },
         openPause: () => show('pause'),
+        /** the map vote changed */
+        refresh() { if (view === 'pause' && voteBox?.isConnected) fillVote(voteBox) },
         onLine(line: string) {
             if (!line.includes('JOUCS_MENU pause')) return
             setTimeout(() => {

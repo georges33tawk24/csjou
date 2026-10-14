@@ -266,6 +266,8 @@
             pointer-events: none;
         }
 
+        .vote { top: auto; bottom: 64px; text-align: center; white-space: pre-line; pointer-events: none; }
+        .secondary.picked { border-color: var(--amber); color: var(--amber); }
         .talkers {
             position: fixed;
             top: 140px;
@@ -588,6 +590,7 @@
     <button id="fsButton" class="fs" hidden>Fullscreen</button>
     <p id="notice" class="notice" role="status" hidden></p>
     <p id="talkers" class="talkers" aria-live="polite"></p>
+    <p id="vote" class="notice vote" role="status" hidden></p>
     <div id="menu" class="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menuTitle">
         <div class="menu-panel">
             <header class="menu-head">

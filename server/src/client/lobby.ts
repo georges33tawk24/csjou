@@ -27,11 +27,18 @@ type FileItem = { path: string; size: number } // path '' = the game files (valv
 type Msg =
     | ({ t: 'info' } & Partial<LobbyInfo>)
     | { t: 'join'; name: string; password: string; needFiles: boolean; have: string[]; resume?: string }
-    | { t: 'welcome'; files: FileItem[]; token: string }
+    | { t: 'welcome'; files: FileItem[]; token: string; busy: boolean } // busy: friends are playing, files come slower
     | { t: 'reject'; reason: string }
     | { t: 'bye' } // the host closed the lobby
     | { t: 'voice'; on: boolean } // a friend turned voice chat on
     | { t: 'roster'; players: VoicePlayer[] } // who has voice chat on
+    | { t: 'ping'; at: number } | { t: 'pong'; at: number } // friends' ping, measured by the host
+    | ({ t: 'vote' } & MapVote) // the host's map vote, on every change
+    | { t: 'ballot'; choice: number } // a friend's pick in it
+    | { t: 'callvote' } // a friend asks for a map vote
+
+/** a vote for the next map; options[0] is staying on the current one */
+export type MapVote = { id: number; options: string[]; counts: number[]; left: number; winner?: string }
 
 const ID_PREFIX = 'joucs-'
 const CODE_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789' // no 0/o, 1/l/i
@@ -130,6 +137,8 @@ class HostNet extends Net {
 type Guest = {
     conn: DataConnection; game: RTCDataChannel; files: RTCDataChannel; ip: Packet['ip']
     joined: boolean; name: string; voice: boolean; token: string; kicked?: boolean
+    downloading: boolean // getting game files or maps; not in the match yet
+    rtts: number[] // last minute of ping samples, ms
 }
 
 export type HostOptions = {
@@ -140,6 +149,8 @@ export type HostOptions = {
     extras: () => Promise<Extra[]>
     /** a friend dropped out and did not come back */
     onLeft: (name: string) => void
+    /** a friend's pick in the map vote, or their request for one (choice undefined) */
+    onBallot: (who: string, choice?: number) => void
 }
 
 export async function hostLobby(opts: HostOptions) {
@@ -188,7 +199,7 @@ export async function hostLobby(opts: HostOptions) {
 
         conn.on('open', () => {
             const {game, files} = channels(conn)
-            guest = {conn, game, files, ip, joined: false, name: '', voice: false, token: crypto.randomUUID()}
+            guest = {conn, game, files, ip, joined: false, name: '', voice: false, token: crypto.randomUUID(), downloading: false, rtts: []}
             guests.set(key, guest)
             game.onmessage = e => {
                 if (guest?.joined) net.incoming.enqueue({ip, port: GUEST_PORT, data: new Int8Array(e.data as ArrayBuffer)})
@@ -198,6 +209,9 @@ export async function hostLobby(opts: HostOptions) {
             const msg = raw as Msg
             if (!guest) return
             if (msg.t === 'info') conn.send({t: 'info', ...info()} satisfies Msg)
+            if (msg.t === 'pong') guest.rtts = [...guest.rtts.slice(-119), performance.now() - msg.at]
+            if (msg.t === 'ballot' && guest.joined) opts.onBallot(key, msg.choice)
+            if (msg.t === 'callvote' && guest.joined) opts.onBallot(key)
             if (msg.t === 'voice' && guest.joined) {
                 guest.voice = msg.on
                 sendRoster()
@@ -226,8 +240,13 @@ export async function hostLobby(opts: HostOptions) {
             const base = msg.needFiles ? await opts.gameFiles() : undefined
             const extras = (await opts.extras()).filter(e => !msg.have?.includes(e.path))
             const items = [...base ? [{path: '', blob: base}] : [], ...extras]
-            conn.send({t: 'welcome', files: items.map(e => ({path: e.path, size: e.blob.size})), token: guest.token} satisfies Msg)
-            ;(async () => { for (const e of items) await sendFile(guest!.files, e.blob) })().catch(() => conn.close())
+            const busy = playing().length > 0
+            conn.send({t: 'welcome', files: items.map(e => ({path: e.path, size: e.blob.size})), token: guest.token, busy} satisfies Msg)
+            const g = guest
+            g.downloading = items.length > 0
+            ;(async () => { for (const e of items) await sendFile(g.files, e.blob, () => fileRate) })()
+                .catch(() => conn.close())
+                .finally(() => { g.downloading = false })
         })
         conn.on('close', () => {
             if (guests.get(key)?.conn !== conn) return
@@ -239,6 +258,23 @@ export async function hostLobby(opts: HostOptions) {
         })
         conn.on('error', () => conn.close())
     })
+
+    // Game files share the host's upload with the match. Friends' ping, measured
+    // twice a second, shows when a file starts filling the upload: the file then
+    // slows down, and speeds up again while their ping stays where it was.
+    let fileRate = Infinity // bytes a second; Infinity while nobody else is playing
+    const playing = () => joined().filter(([, g]) => !g.downloading).map(([, g]) => g)
+    const pinger = setInterval(() => {
+        for (const [, g] of joined()) g.conn.send({t: 'ping', at: performance.now()} satisfies Msg)
+        const players = playing()
+        if (!players.length || !joined().some(([, g]) => g.downloading)) { fileRate = Infinity; return }
+        // ping added over each friend's best of the last minute; the minimum of 3 samples ignores one-off jitter
+        const added = players.map(g => g.rtts.length < 4 ? undefined : Math.min(...g.rtts.slice(-3)) - Math.min(...g.rtts))
+        if (fileRate === Infinity) fileRate = 128 << 10
+        if (added.includes(undefined)) fileRate = Math.min(fileRate, 128 << 10) // just joined: no measurement yet
+        else if (Math.max(...added as number[]) > 25) fileRate = Math.max(32 << 10, fileRate * 0.7)
+        else fileRate += 16 << 10
+    }, 500)
 
     // voice chat: who has it on, for everyone (the host included)
     let hostVoice: VoicePlayer | undefined
@@ -259,6 +295,7 @@ export async function hostLobby(opts: HostOptions) {
         peer,
         /** tell everyone the lobby is closing, then close it */
         async close() {
+            clearInterval(pinger)
             for (const [, g] of joined()) g.conn.send({t: 'bye'} satisfies Msg)
             await new Promise(r => setTimeout(r, 300))
             peer.destroy()
@@ -268,6 +305,10 @@ export async function hostLobby(opts: HostOptions) {
         /** tell friends' lobby screens about a new map or mode */
         broadcastInfo() {
             for (const [, g] of joined()) g.conn.send({t: 'info', ...info()} satisfies Msg)
+        },
+        /** the map vote, to everyone */
+        sendVote(v: MapVote) {
+            for (const [, g] of joined()) g.conn.send({t: 'vote', ...v} satisfies Msg)
         },
         /** the host's own voice chat */
         voice(name: string, fn: (players: VoicePlayer[]) => void) {
@@ -286,18 +327,34 @@ export async function hostLobby(opts: HostOptions) {
 }
 
 // The host's engine keeps the page busy, so read big blocks and queue many
-// messages per turn instead of one small read per frame.
-async function sendFile(ch: RTCDataChannel, blob: Blob) {
-    const MESSAGE = 64 * 1024
+// messages per turn instead of one small read per frame. With a rate, small
+// messages go out at that pace: the browser's queue would send in bursts.
+async function sendFile(ch: RTCDataChannel, blob: Blob, rate: () => number) {
     const BLOCK = 4 << 20
-    ch.bufferedAmountLowThreshold = 2 << 20
+    ch.bufferedAmountLowThreshold = 512 << 10
+    let budget = 0
+    let last = performance.now()
     for (let off = 0; off < blob.size; off += BLOCK) {
         const block = new Uint8Array(await blob.slice(off, off + BLOCK).arrayBuffer())
-        // browsers cap a channel's send queue at 16 MB
-        if (ch.bufferedAmount > 8 << 20) await new Promise(r => ch.addEventListener('bufferedamountlow', r, {once: true}))
-        for (let i = 0; i < block.length; i += MESSAGE) {
+        for (let i = 0; i < block.length;) {
             if (ch.readyState !== 'open') throw new Error('closed')
-            ch.send(block.subarray(i, i + MESSAGE))
+            const r = rate()
+            const size = r === Infinity ? 64 << 10 : 8 << 10
+            if (r === Infinity) {
+                budget = 0
+                last = performance.now()
+                // a short queue: whatever is queued still goes out at full speed if friends start playing
+                if (ch.bufferedAmount > 1 << 20) await new Promise(res => ch.addEventListener('bufferedamountlow', res, {once: true}))
+            } else {
+                while (budget < size || ch.bufferedAmount > 64 << 10) {
+                    await new Promise(res => setTimeout(res, 20))
+                    const now = performance.now()
+                    budget = Math.min(r, budget + (now - last) / 1000 * r) // at most a second's worth saved up
+                    last = now
+                }
+                budget -= size
+            }
+            ch.send(block.subarray(i, i += size))
         }
     }
 }
@@ -328,7 +385,7 @@ export type JoinOptions = {
     needFiles: boolean
     have: string[] // extra map files already here
     resume?: string // token from an earlier join, to get our place back
-    progress?: (got: number, total: number) => void
+    progress?: (got: number, total: number, busy: boolean) => void
 }
 export type JoinResult = { game: RTCDataChannel; files?: Blob; extras: Extra[]; token: string }
 
@@ -357,6 +414,7 @@ export async function findLobby(code: string) {
     let closedHandler = (_reason?: string) => undefined as void
     let infoHandler = (_info: LobbyInfo) => undefined as void
     let rosterHandler = (_players: VoicePlayer[]) => undefined as void
+    let voteHandler = (_vote: MapVote) => undefined as void
     let joined = false
     let lost: ReturnType<typeof setTimeout> | undefined
     conn.on('close', () => closedHandler())
@@ -368,11 +426,13 @@ export async function findLobby(code: string) {
         if (state === 'disconnected') lost = setTimeout(() => closedHandler(), 4000)
     })
     listeners.add(m => {
+        if (m.t === 'ping') conn.send({t: 'pong', at: m.at} satisfies Msg)
         if (!joined) return
         if (m.t === 'reject') closedHandler(m.reason)
         if (m.t === 'bye') closedHandler('The host closed the lobby.')
         if (m.t === 'info') infoHandler(m as unknown as LobbyInfo)
         if (m.t === 'roster') rosterHandler(m.players)
+        if (m.t === 'vote') voteHandler(m)
     })
     peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect() })
 
@@ -404,7 +464,7 @@ export async function findLobby(code: string) {
                         parts.push(data)
                         got += data.byteLength
                         all += data.byteLength
-                        o.progress?.(all, total)
+                        o.progress?.(all, total, m.busy)
                         if (got < m.files[item].size) return
                         blobs.push(new Blob(parts))
                         parts = []
@@ -428,6 +488,9 @@ export async function findLobby(code: string) {
 
         onClose(fn: (reason?: string) => void) { closedHandler = fn },
         onInfo(fn: (info: LobbyInfo) => void) { infoHandler = fn },
+        onVote(fn: (vote: MapVote) => void) { voteHandler = fn },
+        /** our pick in the map vote; without a choice, ask the host for a vote */
+        ballot(choice?: number) { conn.send((choice === undefined ? {t: 'callvote'} : {t: 'ballot', choice}) satisfies Msg) },
         /** turn our voice chat on; fn gets everyone with voice on, now and on every change */
         voice(fn: (players: VoicePlayer[]) => void) {
             rosterHandler = fn

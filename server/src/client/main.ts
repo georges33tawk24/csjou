@@ -7,7 +7,7 @@ import {
     clearExtras, type Extra, extraMaps, mapsIn, openGameFiles, readExtras, savedExtras, savedGameFiles, saveExtra,
     saveGameFiles, savedNav, saveNav,
 } from './files'
-import {CODE_RE, findLobby, guestNet, hostLobby, type Lobby, type LobbyInfo, newLobbyCode, probeLobbies} from './lobby'
+import {CODE_RE, findLobby, guestNet, hostLobby, type Lobby, type LobbyInfo, type MapVote, newLobbyCode, probeLobbies} from './lobby'
 import {initMenus, menuBackground} from './menus'
 import {onPadActivity, rumble} from './pad'
 import {applySettings, initSettings, loadSettings, screenOpen, setInputDevice, usingController} from './settings'
@@ -371,11 +371,12 @@ $('joinBtn').addEventListener('click', async e => {
         const name = playerName()
         const result = await found.join({
             name, password, needFiles: !zip, have: extras.map(x => x.path),
-            progress(got, total) {
+            progress(got, total, busy) {
                 started ||= performance.now()
                 const mbps = got / 1e6 / Math.max(1, (performance.now() - started) / 1000)
                 showFiles('busy', `Getting the game files from the host: ${Math.round(got / 1e6)} of ${Math.round(total / 1e6)} MB ` +
-                    `(${mbps.toFixed(1)} MB/s). Only needed once.`, got / total * 100)
+                    `(${mbps.toFixed(1)} MB/s). ${busy ? 'Friends are playing, so they come slower to keep their game smooth.' : 'Only needed once.'}`,
+                    got / total * 100)
             },
         })
         if (result.files) await useGameFiles(result.files, true)
@@ -411,6 +412,11 @@ function follow(l: Lobby, session: Session) {
         if (info.map !== current.map || info.mode !== current.mode) endOfMap()
         current = {map: info.map, mode: info.mode}
         if (engine) clientMode(engine, modeByLabel(info.mode))
+    })
+    l.onVote(v => {
+        vote = {...v, mine: vote?.id === v.id ? vote.mine : undefined}
+        if (v.winner !== undefined) setTimeout(() => { if (vote?.id === v.id) { vote = undefined; showVote() } }, 6000)
+        showVote()
     })
     l.onClose(reason => {
         if (!playing) return
@@ -541,6 +547,7 @@ $('hostBtn').addEventListener('click', async e => {
             extras: async () => extras,
             // a friend dropped out and didn't come back: free their place in the game now
             onLeft: name => engine?.Cmd_ExecuteString(`kick "${cleanName(name, '')}"`),
+            onBallot: (who, choice) => choice === undefined ? startVote() : castBallot(who, choice),
         })
         hosting = {setup, lobby: lobbyHost}
         keepRunningWhenHidden()
@@ -636,10 +643,13 @@ async function startServer(x: Xash3D, s: ServerSetup) {
     x.Cmd_ExecuteString('sv_maxupdaterate 100') // friends get an update every frame (settings.ts)
     x.Cmd_ExecuteString(`hostname "${s.name}"`)
     x.Cmd_ExecuteString(`map ${s.map}`)
+    scheduleVote()
 }
 
 async function changeMap(map: string, mode: string) {
     if (!hosting || !engine || !maps.includes(map) || !isMode(mode)) return
+    if (vote && vote.winner === undefined) endVote(map, false) // the host decided
+    scheduleVote()
     endOfMap()
     Object.assign(hosting.setup, {map, mode}) // the lobby info friends see reads this too
     current = {map, mode: MODES[mode].label}
@@ -699,6 +709,81 @@ async function startLobbyVoice(peer: Peer, join: (onPlayers: (players: VoicePlay
         if (s.voice === 'push' && voice?.talking()) names.unshift('You')
         $('talkers').textContent = names.map(n => `🔊 ${n}`).join('\n')
     }, 250)
+}
+
+// ---------- map vote (lobbies) ----------
+// After 20 minutes on a map, after a Gun Game win, or when anyone asks from the
+// pause menu, everyone has 20 seconds to pick the next map in the pause menu.
+// Staying is the first option; it wins ties and votes nobody took part in.
+
+const VOTE_AFTER = 20 * 60_000
+const VOTE_SECONDS = 20
+let vote: (MapVote & { mine?: number }) | undefined // what this player sees
+let ballots = new Map<string, number>() // host: who picked what
+let voteClock: ReturnType<typeof setInterval> | undefined
+let nextVote: ReturnType<typeof setTimeout> | undefined
+
+function scheduleVote() {
+    clearTimeout(nextVote)
+    if (hosting) nextVote = setTimeout(startVote, VOTE_AFTER)
+}
+
+function startVote() {
+    if (!hosting || (vote && vote.winner === undefined)) return
+    const others = maps.filter(m => m !== hosting!.setup.map).sort(() => Math.random() - 0.5).slice(0, 4)
+    if (!others.length) return
+    clearTimeout(nextVote)
+    ballots = new Map()
+    vote = {id: (vote?.id ?? 0) + 1, options: [hosting.setup.map, ...others], counts: [], left: VOTE_SECONDS}
+    publishVote()
+    voteClock = setInterval(() => {
+        if (!vote || --vote.left > 0) return publishVote()
+        const best = Math.max(...vote.counts)
+        endVote(vote.counts[0] === best ? vote.options[0] : vote.options[vote.counts.indexOf(best)])
+    }, 1000)
+}
+
+function endVote(winner: string, apply = true) {
+    if (!vote) return
+    clearInterval(voteClock)
+    vote.winner = winner
+    publishVote()
+    const {id} = vote
+    setTimeout(() => { if (vote?.id === id) { vote = undefined; showVote() } }, 6000)
+    if (apply && hosting && winner !== hosting.setup.map) changeMap(winner, hosting.setup.mode)
+    else scheduleVote()
+}
+
+function castBallot(who: string, choice: number) {
+    if (!vote || vote.winner !== undefined || !(choice >= 0 && choice < vote.options.length)) return
+    ballots.set(who, choice)
+    publishVote()
+}
+
+/** host: count, tell everyone, show */
+function publishVote() {
+    if (!vote || !hosting) return
+    vote.counts = vote.options.map((_, i) => [...ballots.values()].filter(c => c === i).length)
+    const {mine: _, ...v} = vote
+    hosting.lobby.sendVote(v)
+    showVote()
+}
+
+function pickMap(choice: number) {
+    if (!vote || vote.winner !== undefined) return
+    vote.mine = choice
+    if (hosting) castBallot('host', choice)
+    else { lobby?.ballot(choice); showVote() }
+}
+
+function showVote() {
+    const v = vote
+    $('vote').hidden = !v
+    if (v) $('vote').textContent = v.winner !== undefined
+        ? (v.winner === v.options[0] ? `Map vote: staying on ${v.winner}` : `Map vote: next map is ${v.winner}`)
+        : `Map vote · ${v.left} s · pause menu (Esc / Start) to vote\n` +
+            v.options.map((m, i) => `${i ? m : `stay on ${m}`} ${v.counts[i] ?? 0}`).join(' · ')
+    settingsUi.refresh()
 }
 
 // offline, the pause menu really pauses (bots included)
@@ -793,7 +878,7 @@ function keepLog(line: string) {
     if (talk) voice?.talk(talk[1] === '1')
     stats.onLine(line)
     shake(line)
-    if (line.includes('JOUCS_GUNGAME_WIN')) setTimeout(endOfMap, 0) // the game restarts in 5 s
+    if (line.includes('JOUCS_GUNGAME_WIN')) setTimeout(() => { endOfMap(); startVote() }, 0) // the game restarts in 5 s
     menus?.onLine(line)
     settingsUi.onLine(line)
 }
@@ -838,6 +923,9 @@ const settingsUi = initSettings({
         kick,
     },
     link: () => lobby?.link(),
+    vote: () => hosting || (lobby && playing) ? vote ?? null : undefined,
+    pickMap,
+    callVote: () => hosting ? startVote() : lobby?.ballot(),
     onPause: pauseOffline,
     showStats: () => showSummaryOverGame(stats.summary(current.map, current.mode)),
 })

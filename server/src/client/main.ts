@@ -550,6 +550,7 @@ $('hostBtn').addEventListener('click', async e => {
             onBallot: (who, choice) => choice === undefined ? startVote() : castBallot(who, choice),
         })
         hosting = {setup, lobby: lobbyHost}
+        Object.assign(window, {joucsHost: lobbyHost}) // for troubleshooting from devtools
         keepRunningWhenHidden()
         await launch(lobbyHost.net, x => startServer(x, setup))
         startLobbyVoice(lobbyHost.peer, fn => lobbyHost.voice(playerName(), fn))

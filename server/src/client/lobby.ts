@@ -1,6 +1,6 @@
 import Peer, {type DataConnection} from 'peerjs'
 import {ErrNoLocation, Net, type Packet} from 'xash3d-fwgs'
-import type {Extra} from './files'
+import {type Extra, nextFileRate} from './files'
 import type {VoicePlayer} from './voice'
 
 // Lobbies run in the host's browser: their engine is a listen server and each
@@ -268,12 +268,7 @@ export async function hostLobby(opts: HostOptions) {
         for (const [, g] of joined()) g.conn.send({t: 'ping', at: performance.now()} satisfies Msg)
         const players = playing()
         if (!players.length || !joined().some(([, g]) => g.downloading)) { fileRate = Infinity; return }
-        // ping added over each friend's best of the last minute; the minimum of 3 samples ignores one-off jitter
-        const added = players.map(g => g.rtts.length < 4 ? undefined : Math.min(...g.rtts.slice(-3)) - Math.min(...g.rtts))
-        if (fileRate === Infinity) fileRate = 128 << 10
-        if (added.includes(undefined)) fileRate = Math.min(fileRate, 128 << 10) // just joined: no measurement yet
-        else if (Math.max(...added as number[]) > 25) fileRate = Math.max(32 << 10, fileRate * 0.7)
-        else fileRate += 16 << 10
+        fileRate = nextFileRate(fileRate, players.map(g => g.rtts))
     }, 500)
 
     // voice chat: who has it on, for everyone (the host included)
@@ -294,6 +289,8 @@ export async function hostLobby(opts: HostOptions) {
         net,
         peer,
         /** tell everyone the lobby is closing, then close it */
+        /** bytes a second for game files right now (Infinity: full speed), for troubleshooting */
+        fileRate: () => fileRate,
         async close() {
             clearInterval(pinger)
             for (const [, g] of joined()) g.conn.send({t: 'bye'} satisfies Msg)

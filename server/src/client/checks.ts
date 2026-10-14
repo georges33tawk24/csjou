@@ -1,5 +1,5 @@
 // `npm run check`: the page's parsing rules (also run by the Docker build)
-import {extraPath} from './files'
+import {extraPath, nextFileRate} from './files'
 import {shapeStick} from './pad'
 import {createStats, parseKill} from './stats'
 
@@ -32,5 +32,32 @@ eq(extraPath('evil.exe'), undefined, 'not a game file')
 eq(shapeStick(0.1, 0, 0.12, 2), [0, 0], 'deadzone')
 eq(shapeStick(1, 0, 0.12, 2).map(v => Math.round(v * 1000)), [1000, 0], 'full tilt')
 eq(Math.round(shapeStick(0.56, 0, 0.12, 2)[0] * 100), 25, 'curve')
+
+// game files while friends play: a 3.3 Mbps upload (400 KB/s) carrying 30 KB/s of
+// game traffic, with a router that queues up to 256 KB (640 ms) before dropping.
+// Friends' ping is 60 ms plus that queue. Two minutes, a step per ping (0.5 s).
+{
+    const link = 400_000, game = 30_000, buffer = 256_000
+    let rate = Infinity, queue = 0, delivered = 0
+    const pings: number[] = [], added: number[] = []
+    for (let step = 0; step < 240; step++) {
+        const offered = (Math.min(rate, link) + game) / 2
+        const overflow = Math.max(0, queue + offered - link / 2 - buffer)
+        queue = Math.min(buffer, Math.max(0, queue + offered - link / 2))
+        delivered += Math.min(rate, link) / 2 - overflow
+        const delay = queue / link * 1000
+        pings.push(60 + delay + (step * 37 % 7)) // a little jitter
+        if (step >= 20) added.push(delay)
+        rate = nextFileRate(rate, [pings.slice(-120)])
+    }
+    const mean = added.reduce((a, b) => a + b) / added.length
+    const share = delivered / 120 / (link - game)
+    if (mean > 15 || Math.max(...added) > 100 || share < 0.75) {
+        throw new Error(`file pacing: friends' added ping ${mean.toFixed(0)} ms average, ${Math.max(...added).toFixed(0)} ms max; ` +
+            `files got ${(share * 100).toFixed(0)}% of the spare upload`)
+    }
+    console.log(`file pacing: friends' added ping ${mean.toFixed(0)} ms average, ${Math.max(...added).toFixed(0)} ms max; ` +
+        `files got ${(share * 100).toFixed(0)}% of the spare upload`)
+}
 
 console.log('checks ok')

@@ -123,3 +123,19 @@ export async function readExtras(files: File[], baseHas: (path: string) => boole
 export const extraMaps = (extras: Extra[]) => extras
     .map(e => /^cstrike\/maps\/([a-z0-9_.-]+)\.bsp$/.exec(e.path)?.[1])
     .filter((m): m is string => !!m)
+
+/**
+ * The next speed (bytes a second) for game files a friend downloads while
+ * others play, from those players' ping samples (ms, oldest first, two a
+ * second, the last minute). It backs off as soon as anyone's best recent ping
+ * is 20 ms over their best of the minute (the files are filling the host's
+ * upload), and otherwise speeds up by 16 KB/s every second. Tuned on a model
+ * of a home upload in checks.ts.
+ */
+export function nextFileRate(rate: number, pings: number[][]): number {
+    if (rate === Infinity) rate = 128 << 10
+    // the lower of the last 2 samples ignores one-off jitter
+    const added = pings.map(p => p.length < 4 ? undefined : Math.min(...p.slice(-2)) - Math.min(...p))
+    if (added.includes(undefined)) return Math.min(rate, 128 << 10) // just joined: no measurement yet
+    return Math.max(...added as number[]) > 20 ? Math.max(32 << 10, rate * 0.7) : rate + (8 << 10)
+}

@@ -116,10 +116,31 @@ function addExtras(list: Extra[]) {
 }
 
 const filesCard = $('files')
+// A computer can get the game files straight from Valve (public/get-cs.*): free,
+// and much faster than through a host's upload. Phones and tablets can't run it.
+const windows = /Windows/.test(navigator.userAgent)
+// (older Windows 10 PowerShell needs TLS 1.2 switched on for https)
+const fromValve = windows
+    ? `[Net.ServicePointManager]::SecurityProtocol='Tls12'; iex (New-Object Net.WebClient).DownloadString('${new URL('get-cs.ps1', location.href)}')`
+    : /Android|iPhone|iPad|CrOS/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? ''
+    : `curl -fsSL ${new URL('get-cs.sh', location.href)} | sh`
+$('valveCmd').textContent = fromValve
+$('valveShell').textContent = windows ? 'PowerShell' : 'Terminal'
+$('valveCopy').addEventListener('click', async e => {
+    const button = e.currentTarget as HTMLButtonElement
+    try {
+        await navigator.clipboard.writeText(fromValve)
+        button.textContent = 'Copied!'
+    } catch {
+        getSelection()?.selectAllChildren($('valveCmd')) // copy it by hand
+    }
+})
+
 function showFiles(state: 'missing' | 'busy' | 'ready' | 'error', text: string, percent = state === 'ready' ? 100 : 0) {
     filesCard.dataset.state = state
     $('filesText').textContent = text
     $('dataBar').style.width = `${percent}%`
+    $('fromValve').hidden = !fromValve || !(state === 'missing' || text.startsWith('Getting the game files from the host'))
 }
 
 function showArt(url: string) {

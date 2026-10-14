@@ -268,6 +268,12 @@
 
         .vote { top: auto; bottom: 64px; text-align: center; white-space: pre-line; pointer-events: none; }
         .secondary.picked { border-color: var(--amber); color: var(--amber); }
+        .from-valve { margin-top: 10px; }
+        .valve-cmd { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+        .valve-cmd code {
+            flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 8px 10px; user-select: all;
+            border: 1px solid var(--border); background: var(--panel); font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+        }
         .talkers {
             position: fixed;
             top: 140px;
@@ -474,6 +480,12 @@
             <label class="secondary file-pick">Add maps (.bsp, .wad or .zip)
                 <input id="mapsInput" type="file" multiple accept=".bsp,.wad,.zip">
             </label>
+        </div>
+        <div id="fromValve" class="from-valve" hidden>
+            <p class="msg">Faster on a computer: get them straight from Valve, free. Open <strong id="valveShell">Terminal</strong>,
+                paste this and press Enter (about 900 MB):</p>
+            <div class="valve-cmd"><code id="valveCmd"></code><button id="valveCopy" class="secondary" type="button">Copy</button></div>
+            <p class="msg">When it says Done, press "Load valve.zip from this device" and pick valve.zip in your JOUCS folder.</p>
         </div>
         <p class="msg extras"><span id="extrasText"></span> <button id="clearExtras" class="link" hidden>Remove extra maps</button></p>
     </section>

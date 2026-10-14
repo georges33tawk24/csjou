@@ -42,7 +42,11 @@ them. Each browser keeps its own copy (Cache Storage, per site), obtained once b
 
 - loading a `valve.zip` with `valve/` and `cstrike/` at the zip root, e.g. made from Valve's free
   dedicated server: `steamcmd +force_install_dir ./cs16 +login anonymous +app_update 90 +quit`, or
-- joining a lobby: the host's browser sends its copy to friends who don't have one yet.
+- joining a lobby: the host's browser sends its copy to friends who don't have one yet, or
+- on a computer, one command from the homepage that downloads Valve's free dedicated server with
+  Valve's SteamCMD and packs the same `valve.zip` (`get-cs.ps1` for Windows PowerShell, `get-cs.sh`
+  for Mac and Linux, in `server/src/client/public/`). Faster than a host's upload, and the host's
+  upload stays free for the match.
 
 Bot navigation meshes (built in ~30 s the first time bots play a map) are kept the same way.
 

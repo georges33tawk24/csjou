@@ -884,10 +884,15 @@ function keepLog(line: string) {
     settingsUi.onLine(line)
 }
 
-// Quit from the engine's own menu frees all engine memory, but the browser
-// keeps calling its frame loop and the next frame crashes on freed memory.
+// Quitting (the engine's own Quit, or after an engine error) frees all engine
+// memory, but the browser keeps calling its frame loop and the next frame
+// crashes on freed memory ("Xash Error: _Mem_Alloc: pool == NULL"). The quit
+// ends in a jump back to the engine's main(), long gone in a browser: an
+// uncaught `Infinity` (Emscripten's longjmp). Either sign stops the loop.
 let engineStopped = false
+window.addEventListener('error', e => { if (e.error === Infinity) stopEngine() })
 function stopEngine() {
+    if (engineStopped) return
     engineStopped = true
     const em = engine?.em as { Module?: { pauseMainLoop?: () => void } } | undefined
     em?.Module?.pauseMainLoop?.()
@@ -1002,7 +1007,13 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
     // Once the engine shuts down (its own Quit, or an engine error) its memory is
     // freed: a command from the page then (mouse, controller, a timer) crashes it.
     const exec = x.Cmd_ExecuteString.bind(x)
-    x.Cmd_ExecuteString = (cmd: string) => { if (!engineStopped) exec(cmd) }
+    x.Cmd_ExecuteString = (cmd: string) => {
+        if (engineStopped) return
+        try { exec(cmd) } catch (e) {
+            if (e !== Infinity) throw e
+            stopEngine() // the command quit the engine
+        }
+    }
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
     const [clientExtras] = await Promise.all([extrasPromise, x.init()])
 

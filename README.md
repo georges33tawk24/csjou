@@ -11,8 +11,9 @@ Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
   carries the traffic when a network blocks direct connections). No router setup, no server to keep
   running. A friend whose connection drops rejoins automatically and keeps their place. The pause
   menu shows each connection's ping and whether it is direct or relayed.
-- **Netcode**: an update and a command every frame (up to 100 a second), other players drawn 33 ms behind (the engine's default
-  is 20 updates and 100 ms); *Settings → Connection → Smoothing* raises it for a shaky connection.
+- **Netcode**: an update and a command every frame (up to 100 a second), other players drawn 33 ms
+  behind (the engine's default is 20 updates a second and 100 ms); *Settings → Connection →
+  Smoothing* raises it for a shaky connection.
 - **Extra maps**: load fan maps (.bsp, .wad or a .zip) on the homepage; a host sends them to friends.
 - **Offline**: the same game modes against bots, entirely in the browser; the pause menu pauses.
 - **Controller**: every action can be bound, a quick menu has drop, radio and chat, the right stick

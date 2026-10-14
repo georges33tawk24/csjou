@@ -10,7 +10,11 @@ Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
   the host's browser (WebRTC; PeerJS's free public service introduces them, and Cloudflare's free relay
   carries the traffic when a network blocks direct connections). No router setup, no server to keep
   running. A friend whose connection drops rejoins automatically and keeps their place. The pause
-  menu shows each connection's ping and whether it is direct or relayed.
+  menu shows each connection's ping and whether it is direct or relayed. A friend who still needs
+  the game files gets them without lagging the others: while friends play, the host watches their
+  ping and sends the files only as fast as the upload allows without raising it.
+- **Map vote**: after 20 minutes on a map, after a Gun Game win, or whenever anyone asks from the
+  pause menu, everyone picks the next map within 20 seconds (staying is an option).
 - **Netcode**: an update and a command every frame (up to 100 a second), other players drawn 50 ms
   behind (the engine's default is 20 updates a second and 100 ms); *Settings → Connection →
   Smoothing* raises it for a shaky connection.

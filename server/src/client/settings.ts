@@ -94,7 +94,7 @@ const DEFAULTS: Omit<Settings, 'pad'> = {
     mouseSens: 3, invertMouse: false, brightness: 0, showFps: false, volume: 0.7, music: 1,
     crossStyle: 'classic', crossColor: '#32fa32', crossAlpha: 255, crossClassicSize: 'auto',
     crossSize: 5, crossGap: 0, crossThick: 1, crossOutline: false, crossDot: false, crossT: false, crossDynamic: true,
-    voice: 'off', smoothing: 33,
+    voice: 'off', smoothing: 50,
 }
 
 export function loadSettings(): Settings {

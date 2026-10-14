@@ -999,6 +999,10 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
         module: {print: keepLog, printErr: keepLog},
     })
     if (net) x.net = net
+    // Once the engine shuts down (its own Quit, or an engine error) its memory is
+    // freed: a command from the page then (mouse, controller, a timer) crashes it.
+    const exec = x.Cmd_ExecuteString.bind(x)
+    x.Cmd_ExecuteString = (cmd: string) => { if (!engineStopped) exec(cmd) }
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
     const [clientExtras] = await Promise.all([extrasPromise, x.init()])
 

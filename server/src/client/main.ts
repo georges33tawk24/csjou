@@ -493,7 +493,8 @@ async function reconnect(old: Lobby, session: Session) {
             if (engineDropped) rejoinGame()
             startLobbyVoice(again.peer, fn => again.voice(fn))
             return
-        } catch {
+        } catch (e) {
+            console.warn('JOUCS reconnect attempt failed:', (e as Error).message) // for troubleshooting from devtools
             await new Promise(r => setTimeout(r, 3000))
         }
     }

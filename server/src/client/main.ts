@@ -199,13 +199,23 @@ $('clearExtras').addEventListener('click', async () => {
 // the client's extra files (14 MB), started early; tried 3 times, since a weak
 // connection that drops this one download would otherwise stop the game loading
 let extrasFetch: Promise<ArrayBuffer> | undefined
+let extras_ = {bytes: 0, done: false} // progress, for the loading screen
 function fetchExtras(): Promise<ArrayBuffer> {
     extrasFetch ??= (async () => {
         for (let attempt = 1; ; attempt++) {
             try {
                 const r = await fetch(ENGINE.libraries.extras)
                 if (!r.ok) throw new Error(`${ENGINE.libraries.extras}: ${r.status}`)
-                return await r.arrayBuffer()
+                if (!r.body) return await r.arrayBuffer()
+                // in pieces, so a slow connection shows progress instead of a frozen logo
+                const reader = r.body.getReader(), parts: Uint8Array[] = []
+                extras_.bytes = 0
+                for (let c = await reader.read(); !c.done; c = await reader.read()) {
+                    parts.push(c.value)
+                    extras_.bytes += c.value.length
+                }
+                extras_.done = true
+                return await new Blob(parts as BlobPart[]).arrayBuffer()
             } catch (e) {
                 if (attempt === 3) { extrasFetch = undefined; throw e }
                 await new Promise(r => setTimeout(r, 2000))
@@ -1080,6 +1090,14 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
         }
     }
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
+    // the first load can take minutes on a slow connection: show it moving, or say it's stuck
+    let seen = -1, still = 0
+    const loading = setInterval(() => {
+        if (extras_.bytes !== seen) { seen = extras_.bytes; still = 0 } else still++
+        $('loadText').textContent = extras_.done || !extras_.bytes ? 'Loading the game…'
+            : still >= 40 ? 'The connection looks stuck. Keep waiting, or reload the page.'
+            : `Loading the game… ${Math.round(extras_.bytes / 1e6)} MB`
+    }, 500)
     let clientExtras: ArrayBuffer
     try {
         [clientExtras] = await Promise.all([fetchExtras(), x.init()])
@@ -1106,6 +1124,8 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
     menus = initMenus(x, zip!)
 
     $('logo').classList.add('done')
+    clearInterval(loading)
+    $('loadText').hidden = true
     x.main()
     if (touchControls.checked) {
         x.Cmd_ExecuteString('touch_enable 1')

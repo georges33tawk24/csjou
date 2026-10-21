@@ -454,6 +454,10 @@
         }
 
         #logo.done { animation: fade-out 0.5s forwards; }
+        .load-text {
+            position: fixed; top: calc(50% + 70px); left: 50%; transform: translateX(-50%); z-index: 2; margin: 0;
+            color: var(--amber); font: 15px var(--font); text-align: center; pointer-events: none;
+        }
 
         @media (prefers-reduced-motion: reduce) {
             #logo { animation: none; transform: translate(-50%, -50%); }
@@ -599,6 +603,7 @@
 
 <div id="game">
     <div id="logo">JOUCS</div>
+    <p id="loadText" class="load-text" aria-live="polite"></p>
     <button id="fsButton" class="fs" hidden>Fullscreen</button>
     <p id="notice" class="notice" role="status" hidden></p>
     <p id="talkers" class="talkers" aria-live="polite"></p>

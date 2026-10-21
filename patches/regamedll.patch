@@ -1,5 +1,5 @@
 diff --git a/regamedll/dlls/bot/cs_bot_learn.cpp b/regamedll/dlls/bot/cs_bot_learn.cpp
-index e68a77a..7221d5b 100644
+index e68a77a..aa1c483 100644
 --- a/regamedll/dlls/bot/cs_bot_learn.cpp
 +++ b/regamedll/dlls/bot/cs_bot_learn.cpp
 @@ -28,7 +28,7 @@
@@ -11,6 +11,38 @@ index e68a77a..7221d5b 100644
  
  unsigned int _generationIndex = 0; // used for iterating nav areas during generation process
  
+@@ -142,8 +142,22 @@ CNavNode *CCSBot::AddNode(const Vector *destPos, const Vector *normal, NavDirTyp
+ 	return node;
+ }
+ 
++// JOUCS: map analysis redraws the meter every frame, and with the short timeslice that is
++// dozens of reliable messages a second to every player for minutes: friends' kill feed,
++// menus and chat queued behind them, and a short dropout overflowed the stream and dropped
++// them. Only send it when the whole percentage (or the phase) changes.
++static int g_iMeterPercent = -1;
++static const char *g_pszMeterTitle = nullptr;
++
+ void drawProgressMeter(float progress, char *title)
+ {
++	const int percent = int(progress * 100.0f);
++	if (percent == g_iMeterPercent && g_pszMeterTitle && !Q_strcmp(title, g_pszMeterTitle))
++		return;
++
++	g_iMeterPercent = percent;
++	g_pszMeterTitle = title;
++
+ 	MESSAGE_BEGIN(MSG_ALL, gmsgBotProgress);
+ 		WRITE_BYTE(BOT_PROGGRESS_DRAW);
+ 		WRITE_BYTE(int(progress * 100.0f));
+@@ -153,6 +167,8 @@ void drawProgressMeter(float progress, char *title)
+ 
+ void startProgressMeter(const char *title)
+ {
++	g_iMeterPercent = -1;
++
+ 	MESSAGE_BEGIN(MSG_ALL, gmsgBotProgress);
+ 		WRITE_BYTE(BOT_PROGGRESS_START);
+ 		WRITE_STRING(title);
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
 index b802a2e..f47b83e 100644
 --- a/regamedll/dlls/client.cpp

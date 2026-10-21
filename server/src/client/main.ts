@@ -195,10 +195,25 @@ $('clearExtras').addEventListener('click', async () => {
 })
 
 // the touch layout and other client extras, served with the page
-const extrasPromise = fetch(ENGINE.libraries.extras).then(r => {
-    if (!r.ok) throw new Error(`${ENGINE.libraries.extras}: ${r.status}`)
-    return r.arrayBuffer()
-})
+// the client's extra files (14 MB), started early; tried 3 times, since a weak
+// connection that drops this one download would otherwise stop the game loading
+let extrasFetch: Promise<ArrayBuffer> | undefined
+function fetchExtras(): Promise<ArrayBuffer> {
+    extrasFetch ??= (async () => {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                const r = await fetch(ENGINE.libraries.extras)
+                if (!r.ok) throw new Error(`${ENGINE.libraries.extras}: ${r.status}`)
+                return await r.arrayBuffer()
+            } catch (e) {
+                if (attempt === 3) { extrasFetch = undefined; throw e }
+                await new Promise(r => setTimeout(r, 2000))
+            }
+        }
+    })()
+    return extrasFetch
+}
+fetchExtras().catch(() => undefined)
 
 // ---------- homepage ----------
 
@@ -1058,7 +1073,13 @@ async function launch(net: Net | undefined, afterStart: (x: Xash3D) => Promise<v
         }
     }
     Object.assign(window, {joucs: x}) // for troubleshooting from devtools
-    const [clientExtras] = await Promise.all([extrasPromise, x.init()])
+    let clientExtras: ArrayBuffer
+    try {
+        [clientExtras] = await Promise.all([fetchExtras(), x.init()])
+    } catch {
+        backToHome('The game didn\'t finish loading. Check your connection and try again.')
+        return
+    }
 
     await Promise.all(Object.entries(zip!.files).map(async ([filename, file]) => {
         if (file.dir) return

@@ -16,8 +16,12 @@ Counter-Strike 1.6 in the browser: **https://georges33tawk24.github.io/csjou/**
 - **Map vote**: after 20 minutes on a map, after a Gun Game win, or whenever anyone asks from the
   pause menu, everyone picks the next map within 20 seconds (staying is an option).
 - **Netcode**: an update and a command every frame (up to 100 a second), other players drawn 50 ms
-  behind (the engine's default is 20 updates a second and 100 ms); *Settings → Connection →
-  Smoothing* raises it for a shaky connection.
+  behind (the engine's default is 20 updates a second and 100 ms). In a friend's game that delay
+  follows the connection: it rises (up to 100 ms) while updates arrive unevenly, so players glide
+  instead of jumping, and drops back on a good link; *Settings → Connection → Smoothing* is the
+  lowest it goes. Tested with lag, jitter, loss, duplicates, bandwidth caps, one-way and full
+  dropouts of up to 40 s, a broken connection, and map changes and rejoins over bad Wi-Fi: friends
+  stay in the game and keep their place. No idle kicks, no speed-hack kicks.
 - **Extra maps**: load fan maps (.bsp, .wad or a .zip) on the homepage; a host sends them to friends.
 - **Offline**: the same game modes against bots, entirely in the browser; the pause menu pauses.
 - **Controller**: every action can be bound, a quick menu has drop, radio and chat, the right stick

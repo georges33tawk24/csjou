@@ -55,6 +55,7 @@ const CLASSIC: Cvars = {
     mp_freeforall: 0, mp_respawn_immunitytime: 0, mp_give_player_c4: 1, mp_weapons_allow_map_placed: 1,
     mp_t_default_weapons_secondary: 'glock18', mp_ct_default_weapons_secondary: 'usp', mp_freezetime: 6,
     mp_item_staytime: 300, bot_deathmatch: 0, mp_maxmoney: 16000, mp_free_armor: 0, mp_kill_reward: 300,
+    mp_autokick: 0, // like CS's own Create Server: a friend in a menu or away for a bit isn't kicked for idling
     sv_alltalk: 1, // voice chat is a party chat: everyone hears everyone
     humans_join_team: 'any', bot_join_team: 'any', mp_autoteambalance: 1, mp_limitteams: 2,
     mp_gungame: 0, mp_weapondrop: 1, mp_infinite_ammo: 0, mp_infinite_grenades: 0,

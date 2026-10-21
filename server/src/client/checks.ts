@@ -1,5 +1,6 @@
 // `npm run check`: the page's parsing rules (also run by the Docker build)
 import {extraPath, nextFileRate} from './files'
+import {smoothingFor} from './settings'
 import {shapeStick} from './pad'
 import {createStats, parseKill} from './stats'
 
@@ -71,6 +72,17 @@ eq(Math.round(shapeStick(0.56, 0, 0.12, 2)[0] * 100), 25, 'curve')
         if (mean > 20 || p95 > 100 || share < 0.6) throw new Error(text)
         console.log(text)
     }
+}
+
+// smoothing follows the connection: steady 16 ms updates keep the setting, a shaky link
+// raises it to cover its slow gaps, a terrible one stops at 100 ms
+{
+    const steady = Array.from({length: 200}, () => 16)
+    eq(smoothingFor(steady, 50), 50, 'steady link keeps the setting')
+    eq(smoothingFor(steady.slice(0, 10), 50), 50, 'too few samples')
+    const shaky = Array.from({length: 200}, (_, i) => i % 10 === 0 ? 70 : 16) // every 10th update 70 ms late
+    eq(smoothingFor(shaky, 50), 80, 'shaky link covers its slow gaps')
+    eq(smoothingFor(Array.from({length: 200}, () => 400), 50), 100, 'never over 100 ms')
 }
 
 console.log('checks ok')

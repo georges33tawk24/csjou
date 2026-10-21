@@ -10,7 +10,7 @@ import {
 import {CODE_RE, findLobby, guestNet, hostLobby, type Lobby, type LobbyInfo, type MapVote, newLobbyCode, probeLobbies} from './lobby'
 import {initMenus, menuBackground} from './menus'
 import {onPadActivity, rumble} from './pad'
-import {applySettings, initSettings, loadSettings, screenOpen, setInputDevice, usingController} from './settings'
+import {applySettings, initSettings, loadSettings, screenOpen, setInputDevice, smoothingFor, usingController} from './settings'
 import {createStats, lastMatch, loadTotals, parseKill, showSummary, type Summary, summaryTable} from './stats'
 import {startVoice, type Voice, type VoicePlayer} from './voice'
 import type Peer from 'peerjs'
@@ -424,6 +424,8 @@ $('joinBtn').addEventListener('click', async e => {
 
         const link = guestNet()
         link.attach(result.game)
+        // smoothing follows the connection (settings.ts smoothingFor)
+        setInterval(() => engine?.Cmd_ExecuteString(`ex_interp ${(smoothingFor(link.gaps(), loadSettings().smoothing) / 1000).toFixed(3)}`), 2000)
         const session = {code, name, password, token: result.token, attach: link.attach}
         follow(found, session)
         current = {map: lobbyInfo.map, mode: lobbyInfo.mode}
@@ -691,6 +693,9 @@ async function startServer(x: Xash3D, s: ServerSetup) {
     x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
     x.Cmd_ExecuteString('sv_timeout 55') // longer than a friend's reconnect (45 s) and their place in the lobby (50 s)
     x.Cmd_ExecuteString('sv_maxupdaterate 100') // friends get an update every frame (settings.ts)
+    // a stalling host or link can make a friend look like a speed hacker; ignoring a burst of
+    // their moves is enough, kicking them after 10 is not (friends only)
+    x.Cmd_ExecuteString('sv_speedhack_kick 0')
     x.Cmd_ExecuteString(`hostname "${s.name}"`)
     x.Cmd_ExecuteString(`map ${s.map}`)
     scheduleVote()

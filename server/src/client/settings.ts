@@ -118,6 +118,19 @@ const rgb = (hex: string) => {
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
 
+/**
+ * Smoothing for a friend's connection, in ms: enough to cover how unevenly the
+ * host's updates arrive (the slowest 1 in 20 gaps, plus 10 ms), never under the
+ * player's own setting and never over 100 ms (the engine's old default). On a
+ * shaky link other players then glide instead of stuttering; on a good one
+ * they stay as close to live as the setting allows.
+ */
+export function smoothingFor(gaps: number[], minMs: number): number {
+    if (gaps.length < 20) return minMs
+    const sorted = [...gaps].sort((a, b) => a - b)
+    return Math.round(Math.min(100, Math.max(minMs, sorted[Math.floor(sorted.length * 0.95)] + 10)))
+}
+
 function engineCommands(s: Settings, controllerFree: boolean): string[] {
     const dz = Math.round(s.deadzone / 100 * 32767)
     const [r, g, b] = rgb(s.crossColor)
@@ -492,7 +505,7 @@ export function initSettings(hooks: Hooks) {
         ['Connection', () => [
             range('Smoothing (how far back other players are shown)', 'smoothing', 17, 100, 1, v => `${v} ms`),
             el('p', {className: 'msg', textContent: 'Lower shows other players closer to where they really are. ' +
-                    'If they stutter or jump around, for example when playing with someone far away, raise it to 50–100 ms.'}),
+                    'In a friend\'s lobby it goes up by itself, up to 100 ms, while your connection is shaky, so players glide instead of jumping; this is the lowest it goes.'}),
         ]],
     ]
 

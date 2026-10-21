@@ -361,6 +361,7 @@ async function sendFile(ch: RTCDataChannel, blob: Blob, rate: () => number) {
 /** the engine's network for a friend; the game channel changes when reconnecting */
 export function guestNet() {
     let game: RTCDataChannel | undefined
+    const arrivals: number[] = [] // when the host's last packets came, ms
     const net = new Net({
         sendto(p: Packet) {
             if (game?.readyState === 'open') game.send(p.data.slice())
@@ -371,8 +372,13 @@ export function guestNet() {
         attach(ch: RTCDataChannel) {
             game = ch
             // the engine connects to 127.0.0.1:8080; everything from the host comes "from" there
-            ch.onmessage = e => net.incoming.enqueue({ip: [127, 0, 0, 1], port: 8080, data: new Int8Array(e.data as ArrayBuffer)})
+            ch.onmessage = e => {
+                if (arrivals.push(performance.now()) > 240) arrivals.shift()
+                net.incoming.enqueue({ip: [127, 0, 0, 1], port: 8080, data: new Int8Array(e.data as ArrayBuffer)})
+            }
         },
+        /** time between the host's packets lately, ms */
+        gaps: () => arrivals.slice(1).map((t, i) => t - arrivals[i]),
     }
 }
 

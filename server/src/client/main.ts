@@ -449,9 +449,10 @@ function follow(l: Lobby, session: Session) {
 /**
  * The connection to the host dropped (Wi-Fi hiccup, phone switching networks).
  * Join again with our token: the host gives back our old place, so the game
- * carries on where it was if we're back within about 30 seconds.
+ * carries on where it was if we're back within about 45 seconds.
  */
 let reconnecting = false
+let engineDropped = false // the host's game dropped us while the connection was down
 async function reconnect(old: Lobby, session: Session) {
     if (reconnecting) return
     reconnecting = true
@@ -460,7 +461,7 @@ async function reconnect(old: Lobby, session: Session) {
     voice?.stop()
     voice = undefined
     showNotice('Lost the connection to the host. Reconnecting…')
-    const until = Date.now() + 28_000
+    const until = Date.now() + 45_000
     while (Date.now() < until) {
         try {
             const again = await findLobby(session.code)
@@ -474,6 +475,7 @@ async function reconnect(old: Lobby, session: Session) {
             follow(again, session)
             showNotice('')
             reconnecting = false
+            if (engineDropped) rejoinGame()
             startLobbyVoice(again.peer, fn => again.voice(fn))
             return
         } catch {
@@ -481,6 +483,15 @@ async function reconnect(old: Lobby, session: Session) {
         }
     }
     backToHome('Lost the connection to the host.')
+}
+
+/** a friend whose game was dropped by the host's: connect the engine again (a new team pick) */
+function rejoinGame() {
+    engineDropped = false
+    if (hosting || !engine || engineStopped || !lobby) return
+    showNotice('The connection to the host hiccuped. Joining the game again…')
+    setTimeout(() => showNotice(''), 8000)
+    engine.Cmd_ExecuteString('connect 127.0.0.1:8080')
 }
 
 // ---------- recent lobbies ----------
@@ -661,7 +672,7 @@ async function startServer(x: Xash3D, s: ServerSetup) {
     current = {map: s.map, mode: MODES[s.mode].label}
     x.Cmd_ExecuteString(`maxplayers ${s.maxPlayers}`)
     x.Cmd_ExecuteString('sv_lan 1') // friends show up on made-up local addresses
-    x.Cmd_ExecuteString('sv_timeout 30') // drop a friend whose browser vanished after 30 s, not 65
+    x.Cmd_ExecuteString('sv_timeout 55') // longer than a friend's reconnect (45 s) and their place in the lobby (50 s)
     x.Cmd_ExecuteString('sv_maxupdaterate 100') // friends get an update every frame (settings.ts)
     x.Cmd_ExecuteString(`hostname "${s.name}"`)
     x.Cmd_ExecuteString(`map ${s.map}`)
@@ -888,9 +899,20 @@ function keepLog(line: string) {
     engineLog.push(line)
     if (engineLog.length > 500) engineLog.shift()
     if (line.includes('Issuing host shutdown')) stopEngine()
+    // the engine didn't load (the connection dropped mid-download) or crashed: home with a
+    // message, not a frozen logo
+    if (line.includes('Aborted(') && !engineStopped) {
+        engineStopped = true
+        setTimeout(() => backToHome('The game stopped loading. Check your connection and try again.'), 0)
+    }
     if (line.includes('JOUCS_MENU quit')) setTimeout(backToHome, 0) // the game menu's Quit (patched at build)
     if (line.includes('server is full')) setTimeout(() => backToHome('This lobby is full.'), 0)
-    if (line.includes('Server connection timed out')) setTimeout(() => backToHome('Lost the connection to the host.'), 0)
+    // the host's game dropped us (timed us out, or gave up on a bad link): unless the lobby is
+    // gone too, join the game again rather than sit on the engine's own menu
+    if (/Server connection timed out|Server issued disconnect|You were kicked from the game/.test(line)) {
+        engineDropped = true
+        setTimeout(() => { if (!reconnecting) rejoinGame() }, 2000) // a removal from the lobby arrives in the meantime
+    }
     // The touch layout loads while connecting, so retarget its gear (edit) button once the
     // team screen shows: it opens the JOUCS pause screen, which has "Edit touch layout".
     if (line.includes('JOUCS_MENU team') && touchControls.checked) {

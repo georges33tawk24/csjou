@@ -122,7 +122,7 @@ const connReady = (peer: Peer, conn: DataConnection) => within(new Promise<void>
 // client socket would swallow friends' packets.
 const SERVER_PORT = 27015 // engine default hostport
 const GUEST_PORT = 27005
-const RESUME_MS = 30_000 // a friend who drops out keeps their place this long
+const RESUME_MS = 50_000 // a friend who drops out keeps their place this long (main.ts sv_timeout is longer)
 
 class HostNet extends Net {
     recvfrom(fd: number, bufPtr: number, bufLen: number, flags: number, sockaddrPtr: number, socklenPtr: number) {
@@ -420,7 +420,8 @@ export async function findLobby(code: string) {
         const state = conn.peerConnection.connectionState
         clearTimeout(lost)
         if (state === 'failed' || state === 'closed') closedHandler()
-        if (state === 'disconnected') lost = setTimeout(() => closedHandler(), 4000)
+        // WebRTC usually gets a struggling link back by itself; rebuilding it takes longer
+        if (state === 'disconnected') lost = setTimeout(() => closedHandler(), 12_000)
     })
     listeners.add(m => {
         if (m.t === 'ping') conn.send({t: 'pong', at: m.at} satisfies Msg)

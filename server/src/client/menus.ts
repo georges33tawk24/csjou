@@ -234,7 +234,6 @@ export function initMenus(x: Xash3D, zip: JSZip) {
     let selected = 0
     let cards: Card[] = []
     let coop = false // friends vs bots: humans are always Counter-Terrorists
-    let refused: ReturnType<typeof setTimeout> | undefined
 
     for (const [file, menu] of Object.entries(menuScripts())) {
         x.em!.FS.mkdirTree('/rodir/cstrike/touch')
@@ -308,16 +307,7 @@ export function initMenus(x: Xash3D, zip: JSZip) {
         const card = cards[i]
         if (!card) return
         x.Cmd_ExecuteString(card.cmd)
-        if (kind === 'team' && card.cmd !== 'jointeam 6') {
-            // stay open: the server answers with the character menu, or with nothing at all when
-            // that team is full or already has more players (bots count), which left people spectating
-            clearTimeout(refused)
-            refused = setTimeout(() => {
-                if (kind === 'team') hint.textContent = 'That team is full right now. Pick the other team or Auto-select.'
-            }, 2500)
-            return
-        }
-        if (kind !== 'buy') return close() // the server opens the next character menu itself
+        if (kind !== 'buy') return close() // the server opens the next team/character menu itself
         const el = grid.children[i] as HTMLElement
         el.classList.remove('bought')
         void el.offsetWidth // restart the flash animation
@@ -343,7 +333,6 @@ export function initMenus(x: Xash3D, zip: JSZip) {
 
     function open(k: Kind) {
         if (k === 'quick' && kind && kind !== 'quick') return // never covers the team or buy screens
-        clearTimeout(refused)
         if (k === 'class_t') team = 't'
         if (k === 'class_ct') team = 'ct'
         if (kind !== k) selected = 0

@@ -132,6 +132,14 @@ class HostNet extends Net {
         }
         return super.recvfrom(fd, bufPtr, bufLen, flags, sockaddrPtr, socklenPtr)
     }
+
+    // A packet bigger than a friend's split size (~1400 bytes: a busy moment with bots, or
+    // the full update a friend asks for after a dropout) goes out in pieces through
+    // `sendto_batch`. The package's Net only has it as `sendtoBatch` (same arguments), so
+    // every piece failed and the friend stayed frozen until they rejoined.
+    sendto_batch(fd: number, bufsPtr: number, lensPtr: number, count: number, flags: number, sockaddrPtr: number, socklenPtr: number) {
+        return this.sendtoBatch(fd, bufsPtr, lensPtr, count, flags, sockaddrPtr, socklenPtr)
+    }
 }
 
 type Guest = {
